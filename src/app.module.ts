@@ -19,14 +19,21 @@ import { PackagesModule } from './packages/packages.module';
 import { ChatModule } from './chat/chat.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { ServeStaticModule } from '@nestjs/serve-static';
+import { existsSync } from 'fs';
 import { join } from 'path';
 import { SendgridService } from './sendgrid/sendgrid.service';
+
+const clientPath = join(__dirname, '..', 'client');
+const serveClient = existsSync(clientPath) && process.env.NODE_ENV !== 'production';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       envFilePath: '.env',
     }),
+    ...(serveClient
+      ? [ServeStaticModule.forRoot({ rootPath: clientPath })]
+      : []),
     JwtModule.register({
       global: true,
       secret: process.env.JWT_SECRET,
@@ -65,10 +72,6 @@ import { SendgridService } from './sendgrid/sendgrid.service';
     PackagesModule,
     ChatModule,
     SubscriptionsModule,
-
-    ServeStaticModule.forRoot({
-      rootPath: join(__dirname, '..', 'client'),
-    }),
   ],
   controllers: [AppController],
   providers: [AppService, SendgridService],
