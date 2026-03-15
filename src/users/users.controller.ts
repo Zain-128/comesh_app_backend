@@ -33,7 +33,6 @@ import {
   FileFieldsInterceptor,
   FileInterceptor,
 } from '@nestjs/platform-express';
-import { ChatsService } from 'src/chats/chats.service';
 import { SuperLikeUserDTO } from './dtos/superLikeUser.dto';
 import { LogRequestPipe } from 'src/pipes/logs.pipe';
 import { AdminLoginDTO } from './dtos/adminLogin.dto';
@@ -54,7 +53,6 @@ export class UsersController {
   constructor(
     private readonly usersService: UsersService,
     private readonly notificationService: NotificationsService,
-    private readonly chatService: ChatsService,
   ) {}
 
   @Post('/adminRegister')
@@ -200,13 +198,6 @@ export class UsersController {
         userLikedByMe: body.userLikedByMe,
         currentUser: req.user._id,
       });
-
-      let chatDate: any = {
-        chatName: '',
-        users: [req.user._id, body.userLikedByMe],
-        latestMessage: '',
-      };
-      this.chatService.create(chatDate);
     } else {
       // console.log('else block');
       updateUser = await this.usersService.findOneAndUpdate(
@@ -355,6 +346,12 @@ export class UsersController {
   }
 
   // Admin APIS
+
+  @Get('/list')
+  @UseGuards(AuthGuard)
+  listUsers(@Req() req: IGetUserAuthInfoRequest) {
+    return this.usersService.listUsers(req);
+  }
 
   @Get('/getAll')
   // @UseGuards(AuthGuard)

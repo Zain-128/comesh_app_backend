@@ -1,30 +1,31 @@
 import {
   IsBoolean,
   IsEmail,
-  IsEmpty,
-  IsEnum,
   IsNotEmpty,
   IsOptional,
   IsString,
   ValidateIf,
 } from 'class-validator';
-import { DeviceTypeEnum, PlatformEnum } from './enums';
 
 export class LoginDTO {
   @IsOptional()
-  @IsString()
-  phoneNo?: string; // Now optional
-
+  @ValidateIf((o) => !o.phoneNo)
   @IsEmail()
-  @IsNotEmpty()
-  email: string; // Required field
+  @IsNotEmpty({ message: 'email or phone number is required' })
+  email?: string;
 
+  @IsOptional()
+  @ValidateIf((o) => !o.email)
+  @IsString()
+  @IsNotEmpty({ message: 'email or phone number is required' })
+  phoneNo?: string;
+
+  @IsOptional()
   @IsBoolean()
-  @IsNotEmpty()
   pushNotification?: boolean;
 
-  @ValidateIf((object) => object.pushNotification === true)
+  @ValidateIf((o) => o.pushNotification === true)
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
   deviceToken?: string;
 }

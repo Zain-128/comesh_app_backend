@@ -161,6 +161,9 @@ export class User {
   @Prop({ default: '' })
   deviceToken: string;
 
+  @Prop({ default: '' })
+  profileImage: string;
+
   @Prop({})
   profileVideo: string;
 
@@ -178,6 +181,10 @@ export class User {
 
   @Prop()
   lastSeenChatTime: string;
+
+  /** Chat IDs for listing: single + group chats */
+  @Prop({ type: [{ type: Types.ObjectId, ref: 'Chat' }], default: [] })
+  chatIds: Types.ObjectId[];
 
   @Prop()
   pronouns: string;

@@ -14,11 +14,9 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { ReportUserModule } from './report-user/report-user.module';
 import { StaticContentModule } from './static-content/static-content.module';
 import { ReasonsModule } from './reasons/reasons.module';
-import { ChatsModule } from './chats/chats.module';
-import { MessagesModule } from './messages/messages.module';
-import { ConversationsModule } from './conversations/conversations.module';
 import { RatingAndFeedbackModule } from './rating-and-feedback/rating-and-feedback.module';
 import { PackagesModule } from './packages/packages.module';
+import { ChatModule } from './chat/chat.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
@@ -63,15 +61,13 @@ import { SendgridService } from './sendgrid/sendgrid.service';
     ReportUserModule,
     StaticContentModule,
     ReasonsModule,
-    ChatsModule,
-    MessagesModule,
-    ConversationsModule,
     RatingAndFeedbackModule,
     PackagesModule,
+    ChatModule,
     SubscriptionsModule,
 
     ServeStaticModule.forRoot({
-      rootPath: join(__dirname, '..', 'client'), // <-- path to the static files
+      rootPath: join(__dirname, '..', 'client'),
     }),
   ],
   controllers: [AppController],

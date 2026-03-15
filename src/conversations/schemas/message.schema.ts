@@ -7,7 +7,12 @@ export type ConversationMessageDocument = HydratedDocument<ConversationMessage>;
 export enum MessageStatus {
   SENT = 'sent',
   DELIVERED = 'delivered',
-  READ = 'read',
+  SEEN = 'seen',
+}
+
+export enum MessageType {
+  TEXT = 'text',
+  IMAGE = 'image',
 }
 
 export const CONVERSATION_MESSAGE_SCHEMA_NAME = 'ConversationMessage';
@@ -17,14 +22,22 @@ export class ConversationMessage {
   @Prop({ type: Types.ObjectId, ref: CONVERSATION_SCHEMA_NAME, required: true })
   conversationId: Types.ObjectId;
 
+  /** Chat id string (deterministic) for quick lookup */
+  @Prop({ required: true, index: true })
+  chatId: string;
+
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   senderId: Types.ObjectId;
 
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   receiverId: Types.ObjectId;
 
-  @Prop({ required: true })
-  text: string;
+  /** Text content or image URL when type is image */
+  @Prop({ required: true, default: '' })
+  content: string;
+
+  @Prop({ enum: MessageType, default: MessageType.TEXT })
+  type: MessageType;
 
   @Prop({ enum: MessageStatus, default: MessageStatus.SENT })
   status: MessageStatus;
@@ -32,13 +45,16 @@ export class ConversationMessage {
   @Prop({ default: null })
   readAt: Date | null;
 
+  /** Preview: same as content for text, '[Photo]' for image */
+  @Prop({ default: '' })
+  text: string;
+
   createdAt: Date;
   updatedAt: Date;
 }
 
 export const ConversationMessageSchema = SchemaFactory.createForClass(ConversationMessage);
 
-// Indexes for pagination and queries
 ConversationMessageSchema.index({ conversationId: 1, createdAt: -1 });
-ConversationMessageSchema.index({ conversationId: 1 });
+ConversationMessageSchema.index({ chatId: 1, createdAt: -1 });
 ConversationMessageSchema.index({ senderId: 1, receiverId: 1 });

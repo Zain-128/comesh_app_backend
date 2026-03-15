@@ -11,6 +11,7 @@ import { Server } from 'socket.io';
 import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConversationsService } from './conversations.service';
+import { MessageType } from './schemas/message.schema';
 
 const CONVERSATION_ROOM_PREFIX = 'conversation:';
 
@@ -42,7 +43,10 @@ export class ConversationsGateway implements OnGatewayConnection, OnGatewayDisco
 
   async handleConnection(client: any) {
     try {
-      const token = client.handshake?.headers?.authorization?.split?.(' ')?.[1];
+      const token =
+        client.handshake?.headers?.authorization?.split?.(' ')?.[1] ||
+        (client.handshake?.auth as any)?.token?.replace?.(/^Bearer\s+/i, '') ||
+        (client.handshake?.auth as any)?.token;
       if (!token) return;
       const payload = this.jwtService.verify(token, { secret: process.env.JWT_SECRET });
       const userId = String(payload.sub ?? payload._id ?? payload.id ?? '');
@@ -96,9 +100,10 @@ export class ConversationsGateway implements OnGatewayConnection, OnGatewayDisco
     return (client as any).userId ?? this.socketToUserId.get(client.id) ?? null;
   }
 
-  /** Get all socket IDs for a user (for multi-device broadcast) */
-  private getUserSocketIds(userId: string): string[] {
-    const set = this.userSockets.get(userId);
+  /** Get all socket IDs for a user (for multi-device broadcast). userId can be string or object. */
+  private getUserSocketIds(userId: string | any): string[] {
+    const key = userId != null ? String(userId) : '';
+    const set = this.userSockets.get(key);
     return set ? Array.from(set) : [];
   }
 
@@ -109,12 +114,13 @@ export class ConversationsGateway implements OnGatewayConnection, OnGatewayDisco
   ) {
     const userId = this.getUserId(client);
     if (!userId || !payload?.conversationId) return;
-    const room = CONVERSATION_ROOM_PREFIX + payload.conversationId;
+    const convId = String(payload.conversationId);
+    const room = CONVERSATION_ROOM_PREFIX + convId;
     await client.leaveAll();
     await client.join(room);
-    (client as any).currentConversationId = payload.conversationId;
-    this.socketToConversation.set(client.id, payload.conversationId);
-    this.userCurrentConversation.set(userId, payload.conversationId);
+    (client as any).currentConversationId = convId;
+    this.socketToConversation.set(client.id, convId);
+    this.userCurrentConversation.set(userId, convId);
   }
 
   @SubscribeMessage('leave_conversation')
@@ -128,39 +134,54 @@ export class ConversationsGateway implements OnGatewayConnection, OnGatewayDisco
   @SubscribeMessage('send_message')
   async handleSendMessage(
     @MessageBody()
-    payload: { conversationId: string; receiverId: string; text: string },
+    payload: {
+      conversationId: string;
+      receiverId: string;
+      text?: string;
+      content?: string;
+      type?: 'text' | 'image';
+    },
     @ConnectedSocket() client: any,
   ) {
     const senderId = this.getUserId(client);
-    if (!senderId || !payload?.conversationId || !payload?.receiverId || !payload?.text?.trim()) {
+    const content = (payload.content ?? payload.text ?? '').trim();
+    const convId = payload?.conversationId != null ? String(payload.conversationId) : '';
+    const receiverIdStr = payload?.receiverId != null ? String(payload.receiverId) : '';
+    if (!senderId || !convId || !receiverIdStr || !content) {
       return { status: 'error', message: 'Invalid payload or unauthorized' };
     }
-    const receiverInThisChat = this.userCurrentConversation.get(payload.receiverId) === payload.conversationId;
+    const receiverInThisChat = this.userCurrentConversation.get(receiverIdStr) === convId;
+    const type = payload.type === 'image' ? MessageType.IMAGE : MessageType.TEXT;
     try {
       const msg = await this.conversationsService.createMessage(
-        payload.conversationId,
+        convId,
         senderId,
-        payload.receiverId,
-        payload.text.trim(),
-        receiverInThisChat,
+        receiverIdStr,
+        content,
+        { type, skipUnreadForReceiver: receiverInThisChat },
       );
       const msgObj = msg.toObject ? msg.toObject() : (msg as any);
-      const room = CONVERSATION_ROOM_PREFIX + payload.conversationId;
-      const receiverSocketIds = this.getUserSocketIds(payload.receiverId);
+      msgObj.conversationId = String(msgObj.conversationId ?? convId);
+      const room = CONVERSATION_ROOM_PREFIX + convId;
+      const receiverSocketIds = this.getUserSocketIds(receiverIdStr);
 
       this.server.to(room).emit('new_message', msgObj);
-      receiverSocketIds.forEach((sid) => this.server.to(sid).emit('new_message', msgObj));
+      this.server.to(room).emit('receive_message', msgObj);
+      receiverSocketIds.forEach((sid) => {
+        this.server.to(sid).emit('new_message', msgObj);
+        this.server.to(sid).emit('receive_message', msgObj);
+      });
       if (receiverSocketIds.length > 0) {
         await this.conversationsService.setDelivered(String(msg._id));
         const senderSocketIds = this.getUserSocketIds(senderId);
         senderSocketIds.forEach((sid) =>
-          this.server.to(sid).emit('message_delivered', { messageId: msg._id, conversationId: payload.conversationId }),
+          this.server.to(sid).emit('message_delivered', { messageId: msg._id, conversationId: convId }),
         );
       }
-      const updated = await this.conversationsService.getConversationById(payload.conversationId);
-      this.emitConversationUpdated(payload.conversationId, updated);
-      this.emitConversationUpdatedToUser(senderId, updated);
-      this.emitConversationUpdatedToUser(payload.receiverId, updated);
+      const updated = await this.conversationsService.getConversationById(convId);
+      this.emitConversationUpdated(convId, updated);
+      this.emitChatListUpdate(senderId, updated);
+      this.emitChatListUpdate(receiverIdStr, updated);
       return { status: 'ok', data: msgObj };
     } catch (e: any) {
       return { status: 'error', message: e?.message ?? 'Failed to send' };
@@ -178,11 +199,13 @@ export class ConversationsGateway implements OnGatewayConnection, OnGatewayDisco
       await this.conversationsService.markAsRead(payload.conversationId, userId);
       const room = CONVERSATION_ROOM_PREFIX + payload.conversationId;
       this.server.to(room).emit('message_read', { conversationId: payload.conversationId, userId });
+      this.server.to(room).emit('message_seen', { conversationId: payload.conversationId, userId });
       const updated = await this.conversationsService.getConversationById(payload.conversationId);
       this.emitConversationUpdated(payload.conversationId, updated);
+      this.emitChatListUpdate(userId, updated);
       (updated?.participants || []).forEach((p: any) => {
         const id = p?._id ?? p;
-        if (id) this.emitConversationUpdatedToUser(String(id), updated);
+        if (id) this.emitChatListUpdate(String(id), updated);
       });
       return { status: 'ok', conversationId: payload.conversationId };
     } catch (e: any) {
@@ -216,12 +239,17 @@ export class ConversationsGateway implements OnGatewayConnection, OnGatewayDisco
     if (!conv) return;
     const room = CONVERSATION_ROOM_PREFIX + conversationId;
     this.server.to(room).emit('conversation_updated', conv);
+    this.server.to(room).emit('chat_list_update', conv);
   }
 
-  private emitConversationUpdatedToUser(userId: string, conv: any) {
+  /** Emit chat_list_update to a user (so chat list moves to top / unread updates) */
+  private emitChatListUpdate(userId: string, conv: any) {
     if (!conv) return;
     const socketIds = this.getUserSocketIds(userId);
-    socketIds.forEach((sid) => this.server.to(sid).emit('conversation_updated', conv));
+    socketIds.forEach((sid) => {
+      this.server.to(sid).emit('conversation_updated', conv);
+      this.server.to(sid).emit('chat_list_update', conv);
+    });
   }
 
   async notifyNewMessageDelivered(messageId: string, conversationId: string, receiverId: string) {
