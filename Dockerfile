@@ -1,36 +1,27 @@
-From node:18-alpine AS development
+FROM node:18-alpine AS development
 
-#create a app directory in container
-WORKDIR usr/src/app
+WORKDIR /usr/src/app
 
-#copy all dependencies
 COPY package*.json ./
+RUN npm ci
 
-#install all dependencies
-RUN npm install
-
-#Bundle app source
 COPY . .
-
 RUN npm run build
 
-# Producitons stages
-From node:18-alpine AS production
+# Production stage
+FROM node:18-alpine AS production
 
-WORKDIR usr/src/app
+WORKDIR /usr/src/app
 
 COPY package*.json ./
+RUN npm ci --only=production
 
-RUN npm install --only=productions
-
-COPY . .
-
-COPY --from=development usr/src/app/dist  ./dist
-
+COPY --from=development /usr/src/app/dist ./dist
 
 EXPOSE 3001
 
-CMD ["node", "dist/src/main.js"]
+ENV NODE_ENV=production
+CMD ["node", "dist/main.js"]
 
 
 
