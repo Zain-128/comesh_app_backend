@@ -14,6 +14,9 @@ class Location {
 class video {
   @Prop()
   url: string;
+
+  @Prop()
+  thumbnailUrl?: string;
 }
 
 class OtpInfo {
@@ -166,6 +169,10 @@ export class User {
 
   @Prop({})
   profileVideo: string;
+
+  /** JPEG preview for profile video (server-generated) */
+  @Prop({ default: '' })
+  profileVideoThumbnail: string;
 
   @Prop({})
   gender: string;

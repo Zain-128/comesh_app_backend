@@ -76,6 +76,14 @@ export class UpdateUserDTO {
   profileVideo?: any;
 
   @IsOptional()
+  @IsString()
+  profileVideoThumbnail?: string;
+
+  @IsOptional()
+  @IsString()
+  profileImage?: string;
+
+  @IsOptional()
   @IsEmail()
   @IsNotEmpty()
   email?: string;

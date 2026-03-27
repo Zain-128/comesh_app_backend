@@ -26,6 +26,8 @@ import { BlockUserDTO } from './dtos/blockUserDto';
 import { LikeUserDTO } from './dtos/likeUser';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { NotificationEnum } from 'src/notifications/enums';
+import { ChatsService } from 'src/chats/chats.service';
+import { MediaService } from 'src/media/media.service';
 
 import { diskStorage } from 'multer';
 import { extname } from 'path';
@@ -53,6 +55,8 @@ export class UsersController {
   constructor(
     private readonly usersService: UsersService,
     private readonly notificationService: NotificationsService,
+    private readonly chatsService: ChatsService,
+    private readonly mediaService: MediaService,
   ) {}
 
   @Post('/adminRegister')
@@ -92,31 +96,53 @@ export class UsersController {
       [
         { name: 'profileVideo', maxCount: 1 },
         { name: 'videos', maxCount: 6 },
+        { name: 'profileImage', maxCount: 1 },
       ],
       storage,
     ),
   )
-  updateProfile(
+  async updateProfile(
     @Req() req: IGetUserAuthInfoRequest,
     @Body() body: UpdateUserDTO,
     @UploadedFiles()
     files: {
       videos?: Express.Multer.File[];
-      profileVideo?: Express.Multer.File;
+      profileVideo?: Express.Multer.File[];
+      profileImage?: Express.Multer.File[];
     },
   ) {
     console.log('update', files);
 
-    let videoArr = [];
+    const host = req.get('host');
+    const userId = String(req.user._id);
+    const stamp = Date.now();
+
+    if (files?.profileImage?.[0]) {
+      body.profileImage = await this.mediaService.processImageUpload(
+        files.profileImage[0],
+        host,
+        `${userId}_pimg_${stamp}`,
+      );
+    }
+
+    let videoArr: { url: string; thumbnailUrl?: string }[] = [];
     let previousVideos = body.previousVideos
-      ? JSON.parse(body.previousVideos)
+      ? JSON.parse(body.previousVideos as unknown as string)
       : [];
 
-    if (files && files.videos) {
-      videoArr = files.videos.map((file) => {
-        return { url: `http://${req.get('host')}/uploads/${file?.filename}` };
-      });
-      console.log({ fileVideos: videoArr });
+    if (files?.videos?.length) {
+      for (let i = 0; i < files.videos.length; i++) {
+        const file = files.videos[i];
+        const processed = await this.mediaService.processUploadedVideo(
+          file,
+          host,
+          `${userId}_v_${stamp}_${i}`,
+        );
+        videoArr.push({
+          url: processed.url,
+          thumbnailUrl: processed.thumbnailUrl || undefined,
+        });
+      }
       body.videos = videoArr;
     }
 
@@ -130,13 +156,14 @@ export class UsersController {
       body.videos = [];
     }
 
-    if (files && files.profileVideo) {
-      console.log(
-        { profileVideo: files.profileVideo },
-        `http://${req.get('host')}/uploads/${files[0]?.filename}`,
+    if (files?.profileVideo?.[0]) {
+      const processed = await this.mediaService.processUploadedVideo(
+        files.profileVideo[0],
+        host,
+        `${userId}_pv_${stamp}`,
       );
-      body.profileVideo = `http://${req.get('host')}/uploads/${files
-        .profileVideo[0]?.filename}`;
+      body.profileVideo = processed.url;
+      body.profileVideoThumbnail = processed.thumbnailUrl || undefined;
     }
 
     return this.usersService.findOneAndUpdate({ _id: req.user._id }, body);
@@ -168,6 +195,14 @@ export class UsersController {
     @Req() req: IGetUserAuthInfoRequest,
     @Body() body: LikeUserDTO,
   ) {
+    if (String(req.user._id) === String(body.userLikedByMe)) {
+      return {
+        success: false,
+        message: 'You cannot like your own profile',
+        data: null,
+      };
+    }
+
     let alreadyLikedByOtherUser = await this.usersService.userModel.findOne({
       _id: req.user._id,
       likedBySomeone: body.userLikedByMe,
@@ -193,6 +228,12 @@ export class UsersController {
           $push: { likedBySomeone: req.user._id },
         },
       );
+
+      await this.chatsService.create({
+        chatName: 'Match',
+        users: [req.user._id as any, body.userLikedByMe as any],
+        latestMessage: '',
+      });
 
       console.log({
         userLikedByMe: body.userLikedByMe,

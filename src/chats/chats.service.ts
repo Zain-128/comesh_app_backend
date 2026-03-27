@@ -18,7 +18,7 @@ export class ChatsService {
   async create(createChatDto: CreateChatDto) {
     console.log({ createChatDto });
     let chatExists = await this.ChatModel.findOne({
-      users: { $eq: createChatDto.users },
+      users: { $all: createChatDto.users, $size: createChatDto.users.length },
     });
 
     console.log({ chatExists });

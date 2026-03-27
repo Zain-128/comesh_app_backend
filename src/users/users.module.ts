@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { UsersController } from './users.controller';
 import { UserSchema } from './user.schema';
@@ -9,6 +9,8 @@ import { NotificationsModule } from 'src/notifications/notifications.module';
 import { TwilioModule } from '../providers/twilio/twilio.module';
 import { MessagingModule } from 'src/fcm/fcm.module';
 import { SendgridService } from 'src/sendgrid/sendgrid.service';
+import { MediaModule } from 'src/media/media.module';
+import { ChatsModule } from 'src/chats/chats.module';
 
 @Module({
   imports: [
@@ -18,6 +20,8 @@ import { SendgridService } from 'src/sendgrid/sendgrid.service';
     TwilioModule,
     MessagingModule,
     ConfigModule,
+    MediaModule,
+    forwardRef(() => ChatsModule),
   ],
   exports: [MongooseModule.forFeature([{ name: 'User', schema: UserSchema }])],
   providers: [UsersService, SendgridService],
