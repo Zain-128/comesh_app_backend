@@ -41,18 +41,21 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     async handleConnection(client: Socket) {
         try {
-            const token = client.handshake.headers.authorization?.split(' ')[1];
+            // Match `chat.gateway.ts` + React Native socket.io (often `auth.token`, not headers)
+            let raw: string | undefined =
+                client.handshake?.headers?.authorization?.replace(/^Bearer\s+/i, '').trim() ||
+                (client.handshake?.auth as any)?.token?.replace?.(/^Bearer\s+/i, '') ||
+                (client.handshake?.auth as any)?.token;
+            if (typeof raw === 'string' && raw.startsWith('Bearer ')) {
+                raw = raw.replace(/^Bearer\s+/i, '').trim();
+            }
+            const token = raw;
             if (!token) {
-                // Allow connection but maybe mark as unauthenticated? 
-                // For now, disconnect if strict auth needed, or just don't add to map.
-                // client.disconnect(); 
                 return;
             }
 
-            // Verify token
             const payload = this.jwtService.verify(token, { secret: process.env.JWT_SECRET });
-            // Adjust payload field if necessary (e.g. payload.sub or payload._id)
-            const userId = payload.sub || payload._id || payload.id;
+            const userId = String(payload.sub ?? payload._id ?? payload.id ?? '');
 
             if (userId) {
                 this.connectedUsers.set(userId, client.id);
@@ -60,7 +63,6 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
             }
         } catch (error) {
             console.error('Connection auth failed', error.message);
-            // Optional: client.disconnect();
         }
     }
 
