@@ -579,6 +579,51 @@ export class UsersService {
     };
   }
 
+  /**
+   * Public profile by MongoDB id — validates id, omits secrets, hides deleted users.
+   * Used by GET /users/by-id/:id and GET /users/othersProfile/:id.
+   */
+  async getUserProfileById(id: string): Promise<genericResponseType> {
+    const trimmed = String(id ?? '').trim();
+    if (!trimmed || !Types.ObjectId.isValid(trimmed)) {
+      return {
+        success: false,
+        message: 'Invalid user id',
+        data: null,
+      };
+    }
+
+    const user = await this.userModel.findById(trimmed).lean().exec();
+    if (!user) {
+      return {
+        success: false,
+        message: 'User not found',
+        data: null,
+      };
+    }
+    if ((user as any).isDeleted) {
+      return {
+        success: false,
+        message: 'User not found',
+        data: null,
+      };
+    }
+
+    const safe = Omit(user as any, [
+      'password',
+      'otp',
+      'otpInfo',
+      'deviceToken',
+      '__v',
+    ]);
+
+    return {
+      success: true,
+      message: 'User fetched successfully',
+      data: safe,
+    };
+  }
+
   async findOneAndUpdate(
     filter: { [key: string]: any },
     data: UpdateUserDTO | any,

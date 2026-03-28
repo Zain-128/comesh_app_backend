@@ -355,10 +355,18 @@ export class UsersController {
     return this.usersService.findOne({ _id: req.user._id });
   }
 
+  /** @deprecated Prefer GET /users/by-id/:id (same behaviour). */
   @Get('/othersProfile/:id')
   @UseGuards(AuthGuard)
   othersProfile(@Param('id') id: string) {
-    return this.usersService.findOne({ _id: id });
+    return this.usersService.getUserProfileById(id);
+  }
+
+  /** Get another user’s profile (or your own) by MongoDB `_id`. Requires Bearer token. */
+  @Get('/by-id/:id')
+  @UseGuards(AuthGuard)
+  getUserById(@Param('id') id: string) {
+    return this.usersService.getUserProfileById(id);
   }
 
   @Post('/deactive')
