@@ -55,7 +55,11 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
             }
 
             const payload = this.jwtService.verify(token, { secret: process.env.JWT_SECRET });
-            const userId = String(payload.sub ?? payload._id ?? payload.id ?? '');
+            /** Login JWT uses `_id`, not `sub`. */
+            const rawId = (payload as { _id?: unknown; sub?: unknown; id?: unknown })._id ??
+                (payload as { sub?: unknown }).sub ??
+                (payload as { id?: unknown }).id;
+            const userId = rawId != null && rawId !== '' ? String(rawId) : '';
 
             if (userId) {
                 this.connectedUsers.set(userId, client.id);
@@ -76,6 +80,85 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         }
     }
 
+    private chatRoom(chatId: string) {
+        return `chat:${String(chatId)}`;
+    }
+
+    /**
+     * REST POST /messages saves via HTTP; emit so clients see new messages in real time.
+     * Uses Socket.IO room (after join-chat) + direct socket for receiver (always).
+     */
+    emitMessageToReceiver(saved: { data?: unknown } | unknown) {
+        const doc: any =
+            saved && typeof saved === 'object' && 'data' in (saved as object)
+                ? (saved as { data: unknown }).data
+                : saved;
+        if (!doc) return;
+        const plain =
+            doc && typeof (doc as { toObject?: () => unknown }).toObject === 'function'
+                ? (doc as { toObject: () => Record<string, unknown> }).toObject()
+                : { ...doc };
+        const toId =
+            plain.to != null
+                ? String((plain.to as { toString?: () => string })?.toString?.() ?? plain.to)
+                : '';
+        if (!toId) return;
+        const chatIdRaw = plain.chatId;
+        const chatIdStr =
+            chatIdRaw != null ? String((chatIdRaw as { toString?: () => string })?.toString?.() ?? chatIdRaw) : '';
+
+        const events = ['receiveMessage', 'receive_message', 'new-message', 'new_message'] as const;
+        for (const ev of events) {
+            if (chatIdStr) {
+                this.server.to(this.chatRoom(chatIdStr)).emit(ev, plain);
+            }
+            const socketId = this.connectedUsers.get(toId);
+            if (socketId) {
+                this.server.to(socketId).emit(ev, plain);
+            }
+        }
+    }
+
+    /** Tell both participants to refetch chat list (last message + unread). */
+    emitChatListRefresh(chatId: string, participantUserIds: string[]) {
+        const cid = String(chatId);
+        const payload = { chatId: cid };
+        const seen = new Set<string>();
+        for (const uid of participantUserIds) {
+            const id = uid != null ? String(uid) : '';
+            if (!id || seen.has(id)) continue;
+            seen.add(id);
+            const socketId = this.connectedUsers.get(id);
+            if (socketId) {
+                this.server.to(socketId).emit('chat-updated', payload);
+            }
+        }
+    }
+
+    @SubscribeMessage('join-chat')
+    handleJoinChat(@MessageBody() body: string | { chatId?: string }, @ConnectedSocket() client: Socket) {
+        const chatId =
+            typeof body === 'string'
+                ? body
+                : body && typeof body === 'object'
+                  ? body.chatId ?? (body as { chat?: string }).chat
+                  : '';
+        if (!chatId) return;
+        void client.join(this.chatRoom(String(chatId)));
+    }
+
+    @SubscribeMessage('leave-chat')
+    handleLeaveChat(@MessageBody() body: string | { chatId?: string }, @ConnectedSocket() client: Socket) {
+        const chatId =
+            typeof body === 'string'
+                ? body
+                : body && typeof body === 'object'
+                  ? body.chatId ?? (body as { chat?: string }).chat
+                  : '';
+        if (!chatId) return;
+        void client.leave(this.chatRoom(String(chatId)));
+    }
+
     @SubscribeMessage('sendMessage')
     async handleSendMessage(
         @MessageBody() payload: { to: string; message: string; chatId: string; type?: string; mediaFile?: any },
@@ -92,26 +175,25 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         // 1. Save to DB using MessagesService
         // We need to construct the DTO
         try {
+            const toUserId = (payload as { to?: string; receiverId?: string }).to ??
+                (payload as { receiverId?: string }).receiverId;
             const savedMessage = await this.messagesService.create({
-                to: payload.to,
+                to: toUserId,
                 from: senderId,
                 chatId: payload.chatId,
-                message: payload.message,
-                messageType: payload.type as any || 'TEXT',
+                message: payload.message ?? (payload as { content?: string }).content ?? '',
+                messageType: (payload.type as any) || (payload as { messageType?: string }).messageType || 'TEXT',
                 mediaFile: payload.mediaFile || null,
                 isRead: false
             } as any); // Type casting for simplicity if DTO differs slightly
 
-            // 2. Emit to Receiver
-            const receiverSocketId = this.connectedUsers.get(payload.to);
-            if (receiverSocketId) {
-                this.server.to(receiverSocketId).emit('receiveMessage', savedMessage.data);
-            }
+            // 2. Emit to Receiver (same shape as REST path)
+            this.emitMessageToReceiver(savedMessage);
 
             // 3. Send Push Notification ALWAYS (regardless of connection status)
             // The frontend handles foreground filtering if needed.
             try {
-                const receiver = await this.userModel.findById(payload.to).select('deviceToken pushNotificationEnabled').lean();
+                const receiver = await this.userModel.findById(toUserId).select('deviceToken pushNotificationEnabled').lean();
 
                 if (receiver && receiver.deviceToken && receiver.pushNotificationEnabled !== false) {
                     await this.fcmService.sendMessageToTokens({

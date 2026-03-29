@@ -39,10 +39,10 @@ export class ChatsController {
   @Patch()
   @UseGuards(AuthGuard)
   resetUnreadMessageCount(@Req() req: IGetUserAuthInfoRequest) {
-    let body: any = req.body;
-    return this.chatsService.update(
-      { _id: body.chatId },
-      { 'unReadMessage.unReadMessageCount': 0 },
+    const body: { chatId?: string } = req.body;
+    return this.chatsService.resetUnreadMessageCount(
+      body.chatId,
+      String(req.user._id),
     );
   }
 

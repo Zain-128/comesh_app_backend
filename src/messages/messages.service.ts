@@ -17,18 +17,46 @@ export class MessagesService {
     private readonly ChatService: ChatsService,
   ) { }
 
-  async create(createMessageDto: CreateMessageDto) {
+  async create(createMessageDto: CreateMessageDto & { replyToMessageId?: string }) {
     console.log({ createMessageDto });
-    let message = await this.MessageModel.create(createMessageDto);
+    const dto: any = { ...createMessageDto };
+    const replyId = dto.replyToMessageId;
+    if (replyId) {
+      delete dto.replyToMessageId;
+      const orig = await this.MessageModel.findById(replyId).lean();
+      if (
+        orig &&
+        String(orig.chatId) === String(dto.chatId)
+      ) {
+        dto.replyTo = {
+          _id: orig._id,
+          message: orig.message ?? '',
+          messageType: orig.messageType,
+          from: orig.from,
+          mediaFile: orig.mediaFile
+            ? {
+                url: (orig.mediaFile as { url?: string }).url,
+                type: String((orig.mediaFile as { type?: string }).type ?? ''),
+              }
+            : undefined,
+        };
+      }
+    }
+    let message = await this.MessageModel.create(dto);
 
     if (message.chatId) {
       // 1. Try to increment existing count for user
+      const now = new Date();
+      const listMeta = {
+        latestMessage: message.message,
+        latestMessageTime: new Date(message.createdAt).toISOString(),
+        updatedAt: now,
+      };
       let chat = await this.ChatService.ChatModel.findOneAndUpdate(
         { _id: message.chatId, 'unReadMessage.userId': message.to },
         {
           $set: {
-            latestMessage: message.message,
-            latestMessageTime: new Date(message.createdAt).toISOString(),
+            ...listMeta,
           },
           $inc: { 'unReadMessage.$.unReadMessageCount': 1 },
         },
@@ -40,10 +68,7 @@ export class MessagesService {
         chat = await this.ChatService.ChatModel.findOneAndUpdate(
           { _id: message.chatId },
           {
-            $set: {
-              latestMessage: message.message,
-              latestMessageTime: new Date(message.createdAt).toISOString(),
-            },
+            $set: listMeta,
             $push: {
               unReadMessage: {
                 userId: message.to,

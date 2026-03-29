@@ -129,6 +129,33 @@ export class ChatsService {
     };
   }
 
+  /**
+   * `unReadMessage` is an array of { userId, unReadMessageCount }.
+   * Must use positional `$` after matching the current user on the array.
+   */
+  async resetUnreadMessageCount(chatId: string, userId: string) {
+    if (!chatId || !userId) {
+      return {
+        success: false,
+        message: 'chatId and user context are required',
+        data: null,
+      };
+    }
+    const updatedChat = await this.ChatModel.findOneAndUpdate(
+      { _id: chatId, 'unReadMessage.userId': userId },
+      { $set: { 'unReadMessage.$.unReadMessageCount': 0 } },
+      { new: true },
+    );
+
+    return {
+      success: true,
+      message: updatedChat
+        ? 'Chat updated successfully'
+        : 'No matching unread row (skipped)',
+      data: updatedChat,
+    };
+  }
+
   remove(id: number) {
     return `This action removes a #${id} chat`;
   }

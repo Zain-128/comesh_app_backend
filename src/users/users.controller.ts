@@ -89,7 +89,10 @@ export class UsersController {
   }
 
   @Put('/updateProfile')
-  @UsePipes(LogRequestPipe, new ValidationPipe())
+  @UsePipes(
+    LogRequestPipe,
+    new ValidationPipe({ transform: true }),
+  )
   @UseGuards(AuthGuard)
   @UseInterceptors(
     FileFieldsInterceptor(

@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsEmail,
   IsString,
@@ -11,6 +11,14 @@ import {
   IsArray,
   ArrayMinSize,
 } from 'class-validator';
+
+/** Multipart / URL-encoded bodies send booleans as the strings "true" | "false". */
+function formBoolean(value: unknown): unknown {
+  if (value === undefined || value === null || value === '') return value;
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  return value;
+}
 
 class OtpInfoDTO {
   @IsString()
@@ -120,6 +128,7 @@ export class UpdateUserDTO {
   emptyVideos?: any;
 
   @IsOptional()
+  @Transform(({ value }) => formBoolean(value))
   @IsBoolean()
   @IsNotEmpty()
   willingToTravel?: boolean;
@@ -155,6 +164,7 @@ export class UpdateUserDTO {
   status?: string;
 
   @IsOptional()
+  @Transform(({ value }) => formBoolean(value))
   @IsBoolean()
   showLocation?: boolean;
 
@@ -164,6 +174,7 @@ export class UpdateUserDTO {
   questionAndAnswers?: QuestionAndAnswerDTO;
 
   @IsOptional()
+  @Transform(({ value }) => formBoolean(value))
   @IsBoolean()
   @IsNotEmpty()
   isVerified?: boolean;

@@ -42,8 +42,32 @@ export class Message {
   @Prop({ required: true })
   messageType: MessageTypeEnum;
 
-  @Prop({ required: true })
-  mediaFile: mediaFiles;
+  /** Only set for ATTACHMENT / BOTH; plain TEXT messages have no media. */
+  @Prop({ required: false })
+  mediaFile?: mediaFiles;
+
+  /** WhatsApp-style quote: snapshot of the message being replied to (same chat). */
+  @Prop({
+    type: {
+      _id: { type: Types.ObjectId, ref: 'Message' },
+      message: { type: String, default: '' },
+      messageType: { type: String },
+      from: { type: Types.ObjectId, ref: 'User' },
+      mediaFile: {
+        url: { type: String },
+        type: { type: String },
+      },
+    },
+    required: false,
+    _id: false,
+  })
+  replyTo?: {
+    _id: Types.ObjectId;
+    message: string;
+    messageType: string;
+    from: Types.ObjectId;
+    mediaFile?: { url: string; type: string };
+  };
 
   @Prop({})
   isRead: boolean;

@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsString, IsNotEmpty } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional } from 'class-validator';
 import { Types } from 'mongoose';
 import { MediaTypeEnum, MessageTypeEnum } from '../message.schema';
 
@@ -32,7 +32,11 @@ export class CreateMessageDto {
   @IsNotEmpty()
   messageType: MessageTypeEnum;
 
-  @IsString()
-  @IsNotEmpty()
+  @IsOptional()
   mediaFile?: any;
+
+  /** If set, server copies a snapshot from this message (must belong to the same chat). */
+  @IsOptional()
+  @IsString()
+  replyToMessageId?: string;
 }
