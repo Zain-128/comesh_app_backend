@@ -10,10 +10,12 @@ import {
   CHAT_MESSAGE_SCHEMA_NAME,
 } from './schemas/chat-message.schema';
 import { UsersModule } from '../users/users.module';
+import { MediaModule } from '../media/media.module';
 
 @Module({
   imports: [
     UsersModule,
+    MediaModule,
     MongooseModule.forFeature([
       { name: CHAT_SCHEMA_NAME, schema: ChatSchema },
       { name: CHAT_MESSAGE_SCHEMA_NAME, schema: ChatMessageSchema },

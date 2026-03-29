@@ -85,6 +85,51 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     /**
+     * FCM when a message is created (REST or socket). Receiver must have deviceToken saved.
+     */
+    async sendPushNotificationForMessage(
+        savedResult: { data?: unknown },
+        options?: { bodyPreview?: string },
+    ) {
+        const doc: any = savedResult?.data;
+        if (!doc) return;
+        const toUserId = doc.to != null ? String(doc.to) : '';
+        if (!toUserId) return;
+        let body =
+            options?.bodyPreview != null && String(options.bodyPreview).trim().length > 0
+                ? String(options.bodyPreview).slice(0, 200)
+                : doc.message && String(doc.message).trim()
+                  ? String(doc.message).slice(0, 200)
+                  : '';
+        if (!body && doc.mediaFile) {
+            body = 'Sent a photo';
+        }
+        if (!body) {
+            body = 'New message';
+        }
+        try {
+            const receiver = await this.userModel
+                .findById(toUserId)
+                .select('deviceToken pushNotificationEnabled')
+                .lean();
+            if (receiver && receiver.deviceToken && receiver.pushNotificationEnabled !== false) {
+                await this.fcmService.sendMessageToTokens({
+                    tokens: [receiver.deviceToken],
+                    title: 'New Message',
+                    body,
+                    payload: {
+                        type: 'CHAT_MESSAGE',
+                        chatId: doc.chatId != null ? String(doc.chatId) : '',
+                        messageId: doc._id != null ? String(doc._id) : '',
+                    },
+                });
+            }
+        } catch (pushError) {
+            console.error('Failed to send push notification', pushError);
+        }
+    }
+
+    /**
      * REST POST /messages saves via HTTP; emit so clients see new messages in real time.
      * Uses Socket.IO room (after join-chat) + direct socket for receiver (always).
      */
@@ -190,26 +235,10 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
             // 2. Emit to Receiver (same shape as REST path)
             this.emitMessageToReceiver(savedMessage);
 
-            // 3. Send Push Notification ALWAYS (regardless of connection status)
-            // The frontend handles foreground filtering if needed.
-            try {
-                const receiver = await this.userModel.findById(toUserId).select('deviceToken pushNotificationEnabled').lean();
-
-                if (receiver && receiver.deviceToken && receiver.pushNotificationEnabled !== false) {
-                    await this.fcmService.sendMessageToTokens({
-                        tokens: [receiver.deviceToken],
-                        title: 'New Message', // Ideally sender name
-                        body: payload.message,
-                        payload: {
-                            type: 'CHAT_MESSAGE',
-                            chatId: payload.chatId,
-                            messageId: savedMessage.data?._id?.toString() || ''
-                        }
-                    });
-                }
-            } catch (pushError) {
-                console.error('Failed to send push notification', pushError);
-            }
+            // 3. Push (same as REST /messages)
+            await this.sendPushNotificationForMessage(savedMessage, {
+                bodyPreview: payload.message ?? (payload as { content?: string }).content ?? '',
+            });
 
             // Also emit back to sender (optional, but good for confirmation/optimistic UI updates)
             return { status: 'ok', data: savedMessage.data };

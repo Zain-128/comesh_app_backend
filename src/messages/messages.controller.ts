@@ -12,6 +12,7 @@ import {
   UploadedFile,
   Inject,
   forwardRef,
+  Logger,
 } from '@nestjs/common';
 import { MessagesService } from './messages.service';
 import { CreateMessageDto } from './dto/create-message.dto';
@@ -22,14 +23,18 @@ import { IGetUserAuthInfoRequest } from 'src/interfaces';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { storage } from 'src/users/users.controller';
 import { ChatsGateway } from 'src/chats/chats.gateway';
+import { B2StorageService } from 'src/media/b2-storage.service';
 
 @Controller('messages')
 @UseGuards(AuthGuard)
 export class MessagesController {
+  private readonly logger = new Logger(MessagesController.name);
+
   constructor(
     private readonly messagesService: MessagesService,
     @Inject(forwardRef(() => ChatsGateway))
     private readonly chatsGateway: ChatsGateway,
+    private readonly b2: B2StorageService,
   ) {}
 
   /** JSON body (no multipart) — reliable for React Native text sends; avoids Android axios+FormData issues. */
@@ -48,6 +53,7 @@ export class MessagesController {
           String(doc.to),
         ]);
       }
+      void this.chatsGateway.sendPushNotificationForMessage(result);
     } catch (e) {
       console.warn('Socket emit after message create failed', e);
     }
@@ -73,9 +79,22 @@ export class MessagesController {
         'http';
       const host = req.get('host');
       const name = encodeURIComponent(file.filename || 'media');
+      let mediaUrl = `${protocol}://${host}/uploads/${name}`;
+      if (this.b2.isEnabled() && file.path) {
+        try {
+          const uid = String(req.user?._id ?? 'anon');
+          mediaUrl = await this.b2.uploadLocalAndUnlink(
+            file.path,
+            `messages/${uid}/${Date.now()}-${file.filename || 'media'}`,
+            file.mimetype || 'application/octet-stream',
+          );
+        } catch (e) {
+          this.logger.warn('B2 upload failed; using local /uploads URL', e);
+        }
+      }
       /** Static route is `app.use('/uploads', …)` in main.ts — path must include `/uploads/`. */
       createMessageDto.mediaFile = {
-        url: `${protocol}://${host}/uploads/${name}`,
+        url: mediaUrl,
         type: kind,
       };
     }
@@ -89,6 +108,7 @@ export class MessagesController {
           String(doc.to),
         ]);
       }
+      void this.chatsGateway.sendPushNotificationForMessage(result);
     } catch (e) {
       console.warn('Socket emit after message create failed', e);
     }

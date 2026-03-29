@@ -9,8 +9,13 @@ export class FCMMessagingService {
     @Inject(MessagingProvider)
     private readonly messaging: admin.messaging.Messaging,
   ) {}
+  /** Must match RN `notifee.createChannel({ id: "comesh" })` (Splash2) or Android may drop heads-up. */
   private android: any = {
     priority: 'high',
+    notification: {
+      channelId: 'comesh',
+      defaultSound: true,
+    },
   };
 
   private apns = {

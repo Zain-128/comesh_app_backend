@@ -23,8 +23,9 @@ class OtpInfo {
   @Prop()
   otp: string;
 
+  /** Unix ms expiry — code stores `Date.now() + ttl`, not boolean. */
   @Prop()
-  expiresIn: boolean;
+  expiresIn: number;
 }
 
 class questionAndAnswer {
@@ -140,7 +141,8 @@ export class User {
   @Prop({})
   pendingConnections: [string]; // expected to be my connection, or just this user swipe up to someone for conneciton
 
-  @Prop({ default: false })
+  /** Default true so FCM chat works when deviceToken is registered; user can disable in settings. */
+  @Prop({ default: true })
   pushNotificationEnabled: boolean;
 
   @Prop({ default: 'USER' })

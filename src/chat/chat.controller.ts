@@ -10,6 +10,7 @@ import {
   HttpStatus,
   UseInterceptors,
   UploadedFile,
+  Logger,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
@@ -22,6 +23,7 @@ import { IGetUserAuthInfoRequest } from '../interfaces';
 import { CreateSingleChatDto } from './dto/create-single-chat.dto';
 import { SendMessageDto } from './dto/send-message.dto';
 import { ChatRequestDto } from './dto/chat-request.dto';
+import { B2StorageService } from '../media/b2-storage.service';
 
 const uploadsChatDir = join(process.cwd(), 'uploads', 'chat');
 const chatImageStorage = {
@@ -40,9 +42,12 @@ const chatImageStorage = {
 @Controller('chat')
 @UseGuards(AuthGuard)
 export class ChatController {
+  private readonly logger = new Logger(ChatController.name);
+
   constructor(
     private readonly chatService: ChatService,
     private readonly chatGateway: ChatGateway,
+    private readonly b2: B2StorageService,
   ) {}
 
   /** GET /chat/get-all-chats-by-user-id - list from user.chatIds, with lastMessage + unread */
@@ -89,7 +94,19 @@ export class ChatController {
   async uploadImage(@Req() req: IGetUserAuthInfoRequest, @UploadedFile() file: Express.Multer.File) {
     if (!file) throw new HttpException('Image file required', HttpStatus.BAD_REQUEST);
     const baseUrl = process.env.API_BASE_URL || `${req.protocol}://${req.get('host')}`;
-    const url = `${baseUrl}/uploads/chat/${file.filename}`;
+    let url = `${baseUrl}/uploads/chat/${file.filename}`;
+    if (this.b2.isEnabled() && file.path) {
+      try {
+        const uid = String(req.user?._id ?? 'anon');
+        url = await this.b2.uploadLocalAndUnlink(
+          file.path,
+          `chat/${uid}/${file.filename}`,
+          file.mimetype || 'image/jpeg',
+        );
+      } catch (e) {
+        this.logger.warn('B2 chat image upload failed; using local URL', e);
+      }
+    }
     return { success: true, data: { url } };
   }
 

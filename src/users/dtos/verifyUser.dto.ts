@@ -16,4 +16,9 @@ export class VerifyUserDTO {
   @IsString()
   @IsNotEmpty({ message: 'email or phone number is required' })
   phoneNo?: string;
+
+  /** FCM token — saved on verify so message pushes work after OTP. */
+  @IsOptional()
+  @IsString()
+  deviceToken?: string;
 }

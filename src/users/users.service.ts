@@ -98,11 +98,17 @@ export class UsersService {
         email: `phone-${phoneNo.replace(/\D/g, '')}@comesh.phone`,
         otpInfo: { otp, expiresIn: expiryTime },
         deviceToken: userData.deviceToken || '',
+        pushNotificationEnabled: Boolean(userData.deviceToken),
       });
     } else {
+      const nextToken = userData.deviceToken || user.data.deviceToken;
       await this.userModel.findOneAndUpdate(
         { phoneNo },
-        { otpInfo: { otp, expiresIn: expiryTime }, deviceToken: userData.deviceToken || user.data.deviceToken },
+        {
+          otpInfo: { otp, expiresIn: expiryTime },
+          deviceToken: nextToken,
+          ...(userData.deviceToken ? { pushNotificationEnabled: true } : {}),
+        },
       );
     }
     try {
@@ -262,36 +268,66 @@ export class UsersService {
       );
     }
 
-    const updateUser = await this.findOneAndUpdate(
-      filter,
-      {
-        isVerified: true,
-        isDeleted: false,
-        otpInfo: { otp: '', expiresIn: 0 },
-        status: 'ACTIVE',
-      },
-    );
+    const $set: Record<string, unknown> = {
+      isVerified: true,
+      isDeleted: false,
+      otpInfo: { otp: '', expiresIn: 0 },
+      status: 'ACTIVE',
+      /** Do not set `isFirstTime` here — new users default to `true` (onboarding). It becomes `false` when profile/onboarding completes (see update flows). */
+    };
+    if (body.deviceToken) {
+      $set.deviceToken = body.deviceToken;
+      $set.pushNotificationEnabled = true;
+    }
 
-    if (!updateUser)
+    /** Update by `_id` — phone string format mismatches were causing findOneAndUpdate to match 0 docs → 500. */
+    let updatedDoc: UserDocument | null;
+    try {
+      updatedDoc = await this.userModel
+        .findOneAndUpdate({ _id: user.data._id }, { $set }, { new: true })
+        .exec();
+    } catch (err: any) {
+      console.error('verifyUser update failed', err?.message, err);
       throw new HttpException(
         {
           success: false,
-          message: 'Internal server error ',
+          message: err?.message || 'Could not verify user',
           status: HttpStatus.INTERNAL_SERVER_ERROR,
           data: null,
         },
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
+    }
 
-    console.log({ user });
+    if (!updatedDoc) {
+      throw new HttpException(
+        {
+          success: false,
+          message: 'User record could not be updated',
+          status: HttpStatus.INTERNAL_SERVER_ERROR,
+          data: null,
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+
+    console.log({ user: updatedDoc });
+
+    const userObj = updatedDoc.toObject
+      ? updatedDoc.toObject()
+      : (updatedDoc as unknown as Record<string, unknown>);
+    const isFirstTime =
+      (userObj as { isFirstTime?: boolean }).isFirstTime !== false;
 
     let payload = {
-      _id: user?.data?._id,
-      phoneNo: user?.data?.phoneNo,
-      email: user?.data?.email || '',
-      firstName: user?.data?.firstName || '',
-      lastName: user?.data?.lastName || '',
-      niche: user?.data?.niche || '',
+      _id: updatedDoc._id,
+      phoneNo: updatedDoc.phoneNo,
+      email: updatedDoc.email || '',
+      firstName: updatedDoc.firstName || '',
+      lastName: updatedDoc.lastName || '',
+      niche: updatedDoc.niche || '',
+      /** Lets clients read onboarding vs returning user from decoded JWT alone. */
+      isFirstTime,
     };
     console.log({ payload });
 
@@ -299,13 +335,13 @@ export class UsersService {
       secret: process.env.JWT_SECRET,
     });
 
-    // user = Omit(user?.toObject(), ['otpInfo', '__v']);
-
     return {
       success: true,
       message: 'User verified successfully',
-      data: user?.data,
+      data: userObj,
       token: token,
+      /** Same flag as `data.isFirstTime` — top-level for clients that only check root fields. */
+      isFirstTime,
     };
   }
 
@@ -384,6 +420,18 @@ export class UsersService {
   async findAll(req: IGetUserAuthInfoRequest) {
     let user = await this.userModel.findOne({ _id: req.user._id });
 
+    if (!user) {
+      throw new HttpException(
+        {
+          success: false,
+          message: 'User not found',
+          status: HttpStatus.NOT_FOUND,
+          data: null,
+        },
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
     let blockUser = user?.blockUsers
       ? user?.blockUsers?.map((value: any) => {
         return new Types.ObjectId(value?.blockedUserId);
@@ -402,17 +450,24 @@ export class UsersService {
 
     let idsToExclude = [...blockUser, ...likeUsers, ...unLikeUsers];
 
-    let niche: [string] = req.body.niche ? req.body.niche : user.niche;
+    const nicheList = (req.body as { niche?: string[] })?.niche?.length
+      ? (req.body as { niche: string[] }).niche
+      : Array.isArray(user.niche) && user.niche.length
+        ? [...user.niche].map((n) => String(n))
+        : [];
+    const niche = nicheList;
 
     let customQueries: any = {
       _id: {
         $nin: idsToExclude,
         $ne: new Types.ObjectId(req.user._id),
       },
-      niche: { $in: niche },
       isDeleted: false,
       status: 'ACTIVE',
     };
+    if (niche?.length) {
+      customQueries.niche = { $in: niche };
+    }
 
     let sort = {
       isSuperLike: 1,
@@ -459,14 +514,17 @@ export class UsersService {
     }
 
     if (req.body.maxDistance) {
-      customQueries['location'] = {
-        $geoWithin: {
-          $centerSphere: [
-            user.location.coordinates,
-            req.body.maxDistance / 6371, // convert maxDistance to radians
-          ],
-        },
-      };
+      const coords = (user as any)?.location?.coordinates;
+      if (Array.isArray(coords) && coords.length >= 2) {
+        customQueries['location'] = {
+          $geoWithin: {
+            $centerSphere: [
+              coords,
+              req.body.maxDistance / 6371, // convert maxDistance to radians
+            ],
+          },
+        };
+      }
     }
 
     if (req.body.questionAndAnswers && req.body.questionAndAnswers.length) {

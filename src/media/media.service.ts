@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import { join } from 'path';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import sharp from 'sharp';
+import { B2StorageService } from './b2-storage.service';
 
 const execFileAsync = promisify(execFile);
 
@@ -13,6 +14,8 @@ export class MediaService {
   private readonly logger = new Logger(MediaService.name);
   private readonly ffmpegPath = ffmpegInstaller.path;
   private readonly processedDir = join(process.cwd(), 'uploads', 'processed');
+
+  constructor(private readonly b2: B2StorageService) {}
 
   private publicFileUrl(host: string, relativeFromUploads: string): string {
     return `http://${host}/uploads/${relativeFromUploads.replace(/^\//, '')}`;
@@ -119,6 +122,17 @@ export class MediaService {
       .jpeg({ quality: 82, mozjpeg: true })
       .toFile(outPath);
     await this.safeUnlink(file.path);
+
+    if (this.b2.isEnabled()) {
+      try {
+        const key = `processed/${outName}`;
+        return await this.b2.uploadLocalAndUnlink(outPath, key, 'image/jpeg');
+      } catch (e: unknown) {
+        this.logger.warn(
+          `B2 image upload failed, using local URL: ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    }
     return this.publicFileUrl(host, `processed/${outName}`);
   }
 
@@ -146,6 +160,34 @@ export class MediaService {
       await this.transcodeToMp4(inputPath, outMp4Path);
       const thumbOk = await this.extractThumbnail(outMp4Path, outThumbPath);
       await this.safeUnlink(inputPath);
+
+      if (this.b2.isEnabled()) {
+        try {
+          const keyMp4 = `processed/${outMp4Name}`;
+          const keyThumb = `processed/${outThumbName}`;
+          const url = await this.b2.uploadLocalFile(
+            outMp4Path,
+            keyMp4,
+            'video/mp4',
+          );
+          let thumbnailUrl = '';
+          if (thumbOk) {
+            thumbnailUrl = await this.b2.uploadLocalFile(
+              outThumbPath,
+              keyThumb,
+              'image/jpeg',
+            );
+          }
+          await this.safeUnlink(outMp4Path);
+          if (thumbOk) await this.safeUnlink(outThumbPath);
+          return { url, thumbnailUrl };
+        } catch (e: unknown) {
+          this.logger.warn(
+            `B2 video upload failed, using local URLs: ${e instanceof Error ? e.message : e}`,
+          );
+        }
+      }
+
       return {
         url: this.publicFileUrl(host, `processed/${outMp4Name}`),
         thumbnailUrl: thumbOk

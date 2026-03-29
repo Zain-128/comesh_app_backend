@@ -13,9 +13,11 @@ import { UserSchema } from '../users/user.schema';
 import { ConversationsService } from './conversations.service';
 import { ConversationsController } from './conversations.controller';
 import { ConversationsGateway } from './conversations.gateway';
+import { MediaModule } from '../media/media.module';
 
 @Module({
   imports: [
+    MediaModule,
     MongooseModule.forFeature([
       { name: CONVERSATION_SCHEMA_NAME, schema: ConversationSchema },
       { name: CONVERSATION_MESSAGE_SCHEMA_NAME, schema: ConversationMessageSchema },
