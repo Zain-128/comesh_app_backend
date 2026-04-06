@@ -18,6 +18,7 @@ import { RatingAndFeedbackModule } from './rating-and-feedback/rating-and-feedba
 import { PackagesModule } from './packages/packages.module';
 import { ChatModule } from './chat/chat.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
+import { ContactModule } from './contact/contact.module';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { existsSync } from 'fs';
 import { join } from 'path';
@@ -72,6 +73,7 @@ const serveClient = existsSync(clientPath) && process.env.NODE_ENV !== 'producti
     PackagesModule,
     ChatModule,
     SubscriptionsModule,
+    ContactModule,
   ],
   controllers: [AppController],
   providers: [AppService, SendgridService],
