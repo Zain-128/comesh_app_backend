@@ -394,7 +394,7 @@ export class UsersService {
     const [data, total] = await Promise.all([
       this.userModel
         .find(match)
-        .select('firstName lastName email profileVideo niche followers')
+        .select('firstName lastName profileVideo niche followers')
         .lean()
         .sort({ firstName: 1 })
         .skip(skip)
@@ -672,6 +672,8 @@ export class UsersService {
       'otp',
       'otpInfo',
       'deviceToken',
+      'email',
+      'phoneNo',
       '__v',
     ]);
 
