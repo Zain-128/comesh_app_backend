@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, ObjectId, Types } from 'mongoose';
+import { SUBSCRIPTION_TIERS } from './subscription-tier';
 
 export type UserDocument = HydratedDocument<User>;
 
@@ -181,6 +182,24 @@ export class User {
 
   @Prop({ default: 0 })
   superLikeCount: number;
+
+  @Prop({
+    enum: Object.values(SUBSCRIPTION_TIERS),
+    default: SUBSCRIPTION_TIERS.CREATOR_ACCESS,
+  })
+  subscriptionTier: string;
+
+  @Prop({ default: null })
+  subscriptionExpiresAt: Date | null;
+
+  @Prop({ default: '' })
+  subscriptionProductId: string;
+
+  @Prop({ default: 0 })
+  swipeCountDay: number;
+
+  @Prop({ default: '' })
+  swipeDayUtc: string;
 
   @Prop({})
   otpInfo: OtpInfo;

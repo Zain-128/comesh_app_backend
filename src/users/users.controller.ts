@@ -12,6 +12,8 @@ import {
   ValidationPipe,
   UsePipes,
   UploadedFiles,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { LoginDTO } from './dtos/loginUser.dto';
@@ -133,6 +135,21 @@ export class UsersController {
       ? JSON.parse(body.previousVideos as unknown as string)
       : [];
 
+    const limits = await this.usersService.getCurrentTierLimits(String(req.user._id));
+    const requestedVideoCount =
+      (Array.isArray(previousVideos) ? previousVideos.length : 0) +
+      (files?.videos?.length || 0);
+    if (requestedVideoCount > limits.maxProfileVideos) {
+      throw new HttpException(
+        {
+          success: false,
+          message: `Your current plan allows up to ${limits.maxProfileVideos} videos`,
+          data: null,
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
     if (files?.videos?.length) {
       for (let i = 0; i < files.videos.length; i++) {
         const file = files.videos[i];
@@ -198,6 +215,11 @@ export class UsersController {
     @Req() req: IGetUserAuthInfoRequest,
     @Body() body: LikeUserDTO,
   ) {
+    const swipeCheck = await this.usersService.consumeSwipeForLike(String(req.user._id));
+    if (!swipeCheck.success) {
+      return swipeCheck;
+    }
+
     if (String(req.user._id) === String(body.userLikedByMe)) {
       return {
         success: false,
@@ -278,6 +300,13 @@ export class UsersController {
     @Req() req: IGetUserAuthInfoRequest,
     @Body() body: SuperLikeUserDTO,
   ) {
+    if (!this.usersService.canUseSuperLike(req.user)) {
+      return {
+        success: false,
+        message: 'Super like is available on Collab Pro and above',
+        data: null,
+      };
+    }
     return this.usersService.superLike(
       { _id: body.userSuperLikedByMe },
       {
@@ -349,6 +378,27 @@ export class UsersController {
   @UseGuards(AuthGuard)
   getAllUsersWhomLikedMe(@Req() req: IGetUserAuthInfoRequest) {
     return this.usersService.getAllUsersWhomLikedMe(req);
+  }
+
+  @Get('/subscription/paywall')
+  @UseGuards(AuthGuard)
+  getSubscriptionPaywall(@Req() req: IGetUserAuthInfoRequest) {
+    return this.usersService.getSubscriptionPaywall(req);
+  }
+
+  @Get('/subscription/analytics')
+  @UseGuards(AuthGuard)
+  getSubscriptionAnalytics(@Req() req: IGetUserAuthInfoRequest) {
+    return this.usersService.getSubscriptionAnalytics(req);
+  }
+
+  @Post('/subscriptions/verify-ios')
+  @UseGuards(AuthGuard)
+  verifyIosSubscription(
+    @Req() req: IGetUserAuthInfoRequest,
+    @Body() body: { receiptData?: string; productId?: string },
+  ) {
+    return this.usersService.verifyIosSubscription(req, body);
   }
 
   @Get('/myProfile')

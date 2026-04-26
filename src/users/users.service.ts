@@ -2,6 +2,7 @@ import { Injectable, HttpException, HttpStatus } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import * as bcryptjs from 'bcryptjs';
+import { request as httpsRequest } from 'https';
 // import { MailerService } from '@nestjs-modules/mailer';
 import { JwtService } from '@nestjs/jwt';
 
@@ -26,6 +27,14 @@ import { TwilioService } from 'src/providers/twilio/twilio.service';
 import { FCMMessagingService } from 'src/fcm/fcm.service';
 import { AdminLoginDTO } from './dtos/adminLogin.dto';
 import { SendgridService } from 'src/sendgrid/sendgrid.service';
+import {
+  SUBSCRIPTION_TIERS,
+  TIER_LIMITS,
+  effectiveSubscriptionTier,
+  limitsForUser,
+  normalizeTier,
+  tierFromProductId,
+} from './subscription-tier';
 
 @Injectable()
 export class UsersService {
@@ -39,6 +48,201 @@ export class UsersService {
     private readonly fcmService: FCMMessagingService,
     private readonly sendgridService: SendgridService,
   ) { }
+
+  private utcDay(date = new Date()): string {
+    return date.toISOString().slice(0, 10);
+  }
+
+  canUseSuperLike(user: any) {
+    return effectiveSubscriptionTier(user || {}) !== SUBSCRIPTION_TIERS.CREATOR_ACCESS;
+  }
+
+  async getCurrentTierLimits(userId: string) {
+    const user = await this.userModel
+      .findById(userId)
+      .select('subscriptionTier subscriptionExpiresAt')
+      .lean()
+      .exec();
+    return limitsForUser(user || {});
+  }
+
+  async consumeSwipeForLike(userId: string): Promise<{
+    success: boolean;
+    message: string;
+    data: null | {
+      tier: string;
+      swipesRemainingToday: number | null;
+    };
+  }> {
+    const user = await this.userModel
+      .findById(userId)
+      .select('subscriptionTier subscriptionExpiresAt swipeCountDay swipeDayUtc')
+      .lean()
+      .exec();
+
+    if (!user) {
+      return {
+        success: false,
+        message: 'User not found',
+        data: null,
+      };
+    }
+
+    const tier = effectiveSubscriptionTier(user as any);
+    const limits = TIER_LIMITS[tier];
+    const today = this.utcDay();
+    let count = Number((user as any).swipeCountDay || 0);
+    const day = String((user as any).swipeDayUtc || '');
+
+    if (day !== today) {
+      count = 0;
+      await this.userModel
+        .updateOne({ _id: userId }, { $set: { swipeDayUtc: today, swipeCountDay: 0 } })
+        .exec();
+    }
+
+    if (limits.maxDailySwipes != null && count >= limits.maxDailySwipes) {
+      return {
+        success: false,
+        message: `Daily swipe limit reached. Upgrade to Collab Pro for unlimited swipes.`,
+        data: {
+          tier,
+          swipesRemainingToday: 0,
+        },
+      };
+    }
+
+    await this.userModel
+      .updateOne(
+        { _id: userId },
+        { $set: { swipeDayUtc: today }, $inc: { swipeCountDay: 1 } },
+      )
+      .exec();
+
+    const remaining =
+      limits.maxDailySwipes == null
+        ? null
+        : Math.max(0, limits.maxDailySwipes - (count + 1));
+
+    return {
+      success: true,
+      message: 'Swipe allowed',
+      data: {
+        tier,
+        swipesRemainingToday: remaining,
+      },
+    };
+  }
+
+  private postJson(urlString: string, payload: Record<string, unknown>): Promise<any> {
+    return new Promise((resolve, reject) => {
+      try {
+        const target = new URL(urlString);
+        const body = JSON.stringify(payload);
+        const req = httpsRequest(
+          {
+            method: 'POST',
+            hostname: target.hostname,
+            path: `${target.pathname}${target.search}`,
+            headers: {
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(body),
+            },
+          },
+          (res) => {
+            let raw = '';
+            res.on('data', (chunk) => {
+              raw += chunk;
+            });
+            res.on('end', () => {
+              try {
+                resolve(raw ? JSON.parse(raw) : {});
+              } catch {
+                reject(new Error('Invalid JSON from Apple verifyReceipt'));
+              }
+            });
+          },
+        );
+        req.on('error', reject);
+        req.write(body);
+        req.end();
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  private async verifyAppleReceiptRaw(receiptData: string) {
+    const sharedSecret = String(process.env.APPLE_SHARED_SECRET || '').trim();
+    if (!sharedSecret) {
+      throw new HttpException(
+        {
+          success: false,
+          message: 'APPLE_SHARED_SECRET is required for production receipt verification',
+          status: HttpStatus.BAD_REQUEST,
+          data: null,
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const payload = {
+      'receipt-data': receiptData,
+      password: sharedSecret,
+      'exclude-old-transactions': true,
+    };
+
+    let response = await this.postJson(
+      'https://buy.itunes.apple.com/verifyReceipt',
+      payload,
+    );
+    if (Number(response?.status) === 21007) {
+      response = await this.postJson(
+        'https://sandbox.itunes.apple.com/verifyReceipt',
+        payload,
+      );
+    }
+    if (Number(response?.status) !== 0) {
+      throw new HttpException(
+        {
+          success: false,
+          message: `Apple receipt verification failed (status ${response?.status})`,
+          status: HttpStatus.BAD_REQUEST,
+          data: null,
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return response;
+  }
+
+  private extractLatestAppleSubscription(receiptResponse: any): {
+    productId: string | null;
+    expiresAt: Date | null;
+  } {
+    const rowsRaw =
+      receiptResponse?.latest_receipt_info ||
+      receiptResponse?.receipt?.in_app ||
+      [];
+    const rows = Array.isArray(rowsRaw) ? rowsRaw : [];
+    if (!rows.length) {
+      return { productId: null, expiresAt: null };
+    }
+
+    rows.sort((a: any, b: any) => {
+      const ea = Number(a?.expires_date_ms || a?.purchase_date_ms || 0);
+      const eb = Number(b?.expires_date_ms || b?.purchase_date_ms || 0);
+      return eb - ea;
+    });
+
+    const latest = rows[0] || {};
+    const pid = latest?.product_id ? String(latest.product_id) : null;
+    const expMs = Number(latest?.expires_date_ms || 0);
+    return {
+      productId: pid,
+      expiresAt: expMs > 0 ? new Date(expMs) : null,
+    };
+  }
 
   async hashPassword(password: string): Promise<string> {
     return bcryptjs.hash(password, 12);
@@ -456,6 +660,7 @@ export class UsersService {
         ? [...user.niche].map((n) => String(n))
         : [];
     const niche = nicheList;
+    const limits = limitsForUser(user as any);
 
     let customQueries: any = {
       _id: {
@@ -496,7 +701,7 @@ export class UsersService {
       customQueries['willingToTravel'] = req.body.willingToTravel;
     }
 
-    if (req.body.minFollowers || req.body.maxFollowers) {
+    if (limits.advancedFilters && (req.body.minFollowers || req.body.maxFollowers)) {
       customQueries['followers'] = {};
 
       if (req.body.minFollowers && req.body.maxFollowers) {
@@ -513,14 +718,21 @@ export class UsersService {
       customQueries['gender'] = req.body.gender;
     }
 
-    if (req.body.maxDistance) {
+    const requestedMiles = Number(req.body.maxDistance || 0);
+    const allowedMiles =
+      limits.maxLocalMatchMiles == null
+        ? requestedMiles || 0
+        : Math.min(requestedMiles || limits.maxLocalMatchMiles, limits.maxLocalMatchMiles);
+
+    if (allowedMiles > 0) {
       const coords = (user as any)?.location?.coordinates;
       if (Array.isArray(coords) && coords.length >= 2) {
+        const radiusRadians = (allowedMiles * 1.60934) / 6371;
         customQueries['location'] = {
           $geoWithin: {
             $centerSphere: [
               coords,
-              req.body.maxDistance / 6371, // convert maxDistance to radians
+              radiusRadians,
             ],
           },
         };
@@ -588,6 +800,20 @@ export class UsersService {
   }
 
   async getAllUsersWhomLikedMe(req: IGetUserAuthInfoRequest) {
+    const me = await this.userModel
+      .findById(req.user._id)
+      .select('subscriptionTier subscriptionExpiresAt')
+      .lean()
+      .exec();
+    const limits = limitsForUser(me || {});
+    if (!limits.seeWhoLiked) {
+      return {
+        success: true,
+        message: 'Upgrade to Collab Pro to see who liked you',
+        data: { likedBySomeone: [] },
+      };
+    }
+
     let user1 = await this.userModel.aggregate([
       {
         $match: {
@@ -831,6 +1057,193 @@ export class UsersService {
         data: updatedData,
       };
     }
+  }
+
+  async getSubscriptionPaywall(req: IGetUserAuthInfoRequest) {
+    const user = await this.userModel
+      .findById(req.user._id)
+      .select('subscriptionTier subscriptionExpiresAt createdAt')
+      .lean()
+      .exec();
+
+    if (!user) {
+      return {
+        success: false,
+        message: 'User not found',
+        data: null,
+      };
+    }
+
+    const createdMs = new Date((user as any).createdAt || Date.now()).getTime();
+    const ageDays = Math.max(0, Math.floor((Date.now() - createdMs) / (24 * 60 * 60 * 1000)));
+
+    let rolloutPhase = 1;
+    let visiblePaidTiers: Array<{ tier: string; title: string; priceMonthlyUsd: number }> = [];
+    if (ageDays >= 90) {
+      rolloutPhase = 4;
+      visiblePaidTiers = [
+        { tier: SUBSCRIPTION_TIERS.COLLAB_PRO, title: 'Collab Pro', priceMonthlyUsd: 9.99 },
+        { tier: SUBSCRIPTION_TIERS.CREATOR_PASSPORT, title: 'Creator Passport', priceMonthlyUsd: 14.99 },
+        { tier: SUBSCRIPTION_TIERS.CREATOR_ELITE, title: 'Creator Elite', priceMonthlyUsd: 29.99 },
+      ];
+    } else if (ageDays >= 60) {
+      rolloutPhase = 3;
+      visiblePaidTiers = [
+        { tier: SUBSCRIPTION_TIERS.COLLAB_PRO, title: 'Collab Pro', priceMonthlyUsd: 9.99 },
+        { tier: SUBSCRIPTION_TIERS.CREATOR_PASSPORT, title: 'Creator Passport', priceMonthlyUsd: 14.99 },
+      ];
+    } else if (ageDays >= 30) {
+      rolloutPhase = 2;
+      visiblePaidTiers = [
+        { tier: SUBSCRIPTION_TIERS.COLLAB_PRO, title: 'Collab Pro', priceMonthlyUsd: 9.99 },
+      ];
+    }
+
+    const tier = effectiveSubscriptionTier(user as any);
+    return {
+      success: true,
+      message: 'Subscription paywall fetched successfully',
+      data: {
+        rolloutPhase,
+        freeTier: {
+          tier: SUBSCRIPTION_TIERS.CREATOR_ACCESS,
+          title: 'Creator Access',
+          priceMonthlyUsd: 0,
+          alwaysAvailable: true,
+        },
+        availableTiers: [
+          {
+            tier: SUBSCRIPTION_TIERS.CREATOR_ACCESS,
+            title: 'Creator Access',
+            priceMonthlyUsd: 0,
+          },
+          ...visiblePaidTiers,
+        ],
+        effectiveTier: tier,
+        visiblePaidTiers,
+        limits: limitsForUser(user as any),
+      },
+    };
+  }
+
+  async getSubscriptionAnalytics(req: IGetUserAuthInfoRequest) {
+    const user = await this.userModel
+      .findById(req.user._id)
+      .select('subscriptionTier subscriptionExpiresAt likedBySomeone likedByMe connections')
+      .lean()
+      .exec();
+
+    if (!user) {
+      return {
+        success: false,
+        message: 'User not found',
+        data: null,
+      };
+    }
+
+    const tier = effectiveSubscriptionTier(user as any);
+    if (tier !== SUBSCRIPTION_TIERS.CREATOR_ELITE) {
+      return {
+        success: false,
+        message: 'Analytics are available on Creator Elite',
+        data: null,
+      };
+    }
+
+    return {
+      success: true,
+      message: 'Subscription analytics fetched successfully',
+      data: {
+        profileLikes: Array.isArray((user as any).likedBySomeone)
+          ? (user as any).likedBySomeone.length
+          : 0,
+        sentLikes: Array.isArray((user as any).likedByMe)
+          ? (user as any).likedByMe.length
+          : 0,
+        totalConnections: Array.isArray((user as any).connections)
+          ? (user as any).connections.length
+          : 0,
+      },
+    };
+  }
+
+  async verifyIosSubscription(
+    req: IGetUserAuthInfoRequest,
+    body: { receiptData?: string; productId?: string },
+  ) {
+    const receiptData = body?.receiptData?.trim();
+    const productIdFromClient = body?.productId?.trim();
+    if (!receiptData && !productIdFromClient) {
+      throw new HttpException(
+        {
+          success: false,
+          message: 'receiptData or productId is required',
+          status: HttpStatus.BAD_REQUEST,
+          data: null,
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const skipVerify = String(process.env.IAP_SKIP_VERIFICATION || '').toLowerCase() === 'true';
+    let verifiedProductId = productIdFromClient || null;
+    let expiresAt: Date | null = null;
+
+    if (receiptData && !skipVerify) {
+      const apple = await this.verifyAppleReceiptRaw(receiptData);
+      const latest = this.extractLatestAppleSubscription(apple);
+      verifiedProductId = latest.productId || verifiedProductId;
+      expiresAt = latest.expiresAt;
+      if (!expiresAt) {
+        throw new HttpException(
+          {
+            success: false,
+            message: 'Apple receipt does not include a valid subscription expiry',
+            status: HttpStatus.BAD_REQUEST,
+            data: null,
+          },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+    }
+
+    const nextTier =
+      tierFromProductId(verifiedProductId) ||
+      (skipVerify ? SUBSCRIPTION_TIERS.COLLAB_PRO : null);
+
+    if (!nextTier || nextTier === SUBSCRIPTION_TIERS.CREATOR_ACCESS) {
+      throw new HttpException(
+        {
+          success: false,
+          message: 'Unsupported or missing paid product id',
+          status: HttpStatus.BAD_REQUEST,
+          data: null,
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const finalExpiry = expiresAt || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const updated = await this.userModel
+      .findOneAndUpdate(
+        { _id: req.user._id },
+        {
+          $set: {
+            subscriptionTier: normalizeTier(nextTier),
+            subscriptionExpiresAt: finalExpiry,
+            subscriptionProductId: verifiedProductId || nextTier,
+            isPackageSubscribed: true,
+          },
+        },
+        { new: true },
+      )
+      .exec();
+
+    return {
+      success: true,
+      message: 'Subscription verified successfully',
+      data: updated,
+    };
   }
 
   async sendOtp(body: SendOtpDTO) {
