@@ -71,6 +71,7 @@ export class ChatsService {
                 firstName: 1,
                 lastName: 1,
                 profileImage: 1,
+                profileVideo: 1,
                 profileVideoThumbnail: 1,
               },
             },

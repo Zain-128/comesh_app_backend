@@ -5,7 +5,7 @@ import { promisify } from 'util';
 import { join } from 'path';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import sharp from 'sharp';
-import { B2StorageService } from './b2-storage.service';
+import { ImageKitStorageService } from './imagekit-storage.service';
 
 const execFileAsync = promisify(execFile);
 
@@ -15,11 +15,7 @@ export class MediaService {
   private readonly ffmpegPath = ffmpegInstaller.path;
   private readonly processedDir = join(process.cwd(), 'uploads', 'processed');
 
-  constructor(private readonly b2: B2StorageService) {}
-
-  private publicFileUrl(host: string, relativeFromUploads: string): string {
-    return `http://${host}/uploads/${relativeFromUploads.replace(/^\//, '')}`;
-  }
+  constructor(private readonly imagekit: ImageKitStorageService) {}
 
   private async ensureProcessedDir(): Promise<void> {
     await fs.mkdir(this.processedDir, { recursive: true });
@@ -109,7 +105,7 @@ export class MediaService {
    */
   async processImageUpload(
     file: Express.Multer.File,
-    host: string,
+    _host: string,
     baseName: string,
   ): Promise<string> {
     await this.ensureProcessedDir();
@@ -123,17 +119,11 @@ export class MediaService {
       .toFile(outPath);
     await this.safeUnlink(file.path);
 
-    if (this.b2.isEnabled()) {
-      try {
-        const key = `processed/${outName}`;
-        return await this.b2.uploadLocalAndUnlink(outPath, key, 'image/jpeg');
-      } catch (e: unknown) {
-        this.logger.warn(
-          `B2 image upload failed, using local URL: ${e instanceof Error ? e.message : e}`,
-        );
-      }
+    if (!this.imagekit.isEnabled()) {
+      throw new Error('ImageKit is not configured');
     }
-    return this.publicFileUrl(host, `processed/${outName}`);
+    const key = `processed/${outName}`;
+    return this.imagekit.uploadLocalAndUnlink(outPath, key, 'image/jpeg');
   }
 
   /**
@@ -142,11 +132,9 @@ export class MediaService {
    */
   async processUploadedVideo(
     file: Express.Multer.File,
-    host: string,
+    _host: string,
     uniquePrefix: string,
   ): Promise<{ url: string; thumbnailUrl: string }> {
-    const originalName = file.filename;
-    const originalUrl = this.publicFileUrl(host, originalName);
     const inputPath = file.path;
 
     const safePrefix = uniquePrefix.replace(/[^a-zA-Z0-9_-]/g, '');
@@ -161,47 +149,33 @@ export class MediaService {
       const thumbOk = await this.extractThumbnail(outMp4Path, outThumbPath);
       await this.safeUnlink(inputPath);
 
-      if (this.b2.isEnabled()) {
-        try {
-          const keyMp4 = `processed/${outMp4Name}`;
-          const keyThumb = `processed/${outThumbName}`;
-          const url = await this.b2.uploadLocalFile(
-            outMp4Path,
-            keyMp4,
-            'video/mp4',
-          );
-          let thumbnailUrl = '';
-          if (thumbOk) {
-            thumbnailUrl = await this.b2.uploadLocalFile(
-              outThumbPath,
-              keyThumb,
-              'image/jpeg',
-            );
-          }
-          await this.safeUnlink(outMp4Path);
-          if (thumbOk) await this.safeUnlink(outThumbPath);
-          return { url, thumbnailUrl };
-        } catch (e: unknown) {
-          this.logger.warn(
-            `B2 video upload failed, using local URLs: ${e instanceof Error ? e.message : e}`,
-          );
-        }
+      if (!this.imagekit.isEnabled()) {
+        throw new Error('ImageKit is not configured');
       }
-
-      return {
-        url: this.publicFileUrl(host, `processed/${outMp4Name}`),
-        thumbnailUrl: thumbOk
-          ? this.publicFileUrl(host, `processed/${outThumbName}`)
-          : '',
-      };
-    } catch (e: any) {
-      this.logger.error(
-        `Video processing failed, keeping original file: ${e?.message ?? e}`,
+      const keyMp4 = `processed/${outMp4Name}`;
+      const keyThumb = `processed/${outThumbName}`;
+      const url = await this.imagekit.uploadLocalFile(
+        outMp4Path,
+        keyMp4,
+        'video/mp4',
       );
-      return {
-        url: originalUrl,
-        thumbnailUrl: '',
-      };
+      let thumbnailUrl = '';
+      if (thumbOk) {
+        thumbnailUrl = await this.imagekit.uploadLocalFile(
+          outThumbPath,
+          keyThumb,
+          'image/jpeg',
+        );
+      }
+      await this.safeUnlink(outMp4Path);
+      if (thumbOk) await this.safeUnlink(outThumbPath);
+      return { url, thumbnailUrl };
+    } catch (e: any) {
+      this.logger.error(`Video processing/upload failed: ${e?.message ?? e}`);
+      await this.safeUnlink(inputPath);
+      await this.safeUnlink(outMp4Path);
+      await this.safeUnlink(outThumbPath);
+      throw e;
     }
   }
 }

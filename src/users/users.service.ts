@@ -598,7 +598,9 @@ export class UsersService {
     const [data, total] = await Promise.all([
       this.userModel
         .find(match)
-        .select('firstName lastName profileVideo niche followers')
+        .select(
+          'firstName lastName email profileImage profileVideo profileVideoThumbnail niche followers',
+        )
         .lean()
         .sort({ firstName: 1 })
         .skip(skip)

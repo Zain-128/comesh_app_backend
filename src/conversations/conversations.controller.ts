@@ -24,7 +24,7 @@ import { IGetUserAuthInfoRequest } from '../interfaces';
 import { SendMessageDto } from './dtos/send-message.dto';
 import { StartConversationDto } from './dtos/start-conversation.dto';
 import { MessageType } from './schemas/message.schema';
-import { B2StorageService } from '../media/b2-storage.service';
+import { ImageKitStorageService } from '../media/imagekit-storage.service';
 
 const uploadsChatDir = join(process.cwd(), 'uploads', 'chat');
 const chatImageStorage = {
@@ -47,7 +47,7 @@ export class ConversationsController {
 
   constructor(
     private readonly conversationsService: ConversationsService,
-    private readonly b2: B2StorageService,
+    private readonly imagekit: ImageKitStorageService,
   ) {}
 
   /** GET /conversations - chat list with unread counts */
@@ -110,20 +110,15 @@ export class ConversationsController {
   @UseInterceptors(FileInterceptor('image', { ...chatImageStorage, limits: { fileSize: 10 * 1024 * 1024 } }))
   async uploadImage(@Req() req: IGetUserAuthInfoRequest, @UploadedFile() file: Express.Multer.File) {
     if (!file) throw new HttpException('Image file required', HttpStatus.BAD_REQUEST);
-    const baseUrl = process.env.API_BASE_URL || `${req.protocol}://${req.get('host')}`;
-    let url = `${baseUrl}/uploads/chat/${file.filename}`;
-    if (this.b2.isEnabled() && file.path) {
-      try {
-        const uid = String(req.user?._id ?? 'anon');
-        url = await this.b2.uploadLocalAndUnlink(
-          file.path,
-          `chat/${uid}/${file.filename}`,
-          file.mimetype || 'image/jpeg',
-        );
-      } catch (e) {
-        this.logger.warn('B2 conversations image upload failed; using local URL', e);
-      }
+    if (!this.imagekit.isEnabled()) {
+      throw new HttpException('ImageKit not configured', HttpStatus.INTERNAL_SERVER_ERROR);
     }
+    const uid = String(req.user?._id ?? 'anon');
+    const url = await this.imagekit.uploadLocalAndUnlink(
+      file.path,
+      `chat/${uid}/${file.filename}`,
+      file.mimetype || 'image/jpeg',
+    );
     return { success: true, data: { url } };
   }
 

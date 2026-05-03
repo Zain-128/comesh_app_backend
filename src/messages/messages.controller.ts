@@ -23,7 +23,7 @@ import { IGetUserAuthInfoRequest } from 'src/interfaces';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { storage } from 'src/users/users.controller';
 import { ChatsGateway } from 'src/chats/chats.gateway';
-import { B2StorageService } from 'src/media/b2-storage.service';
+import { ImageKitStorageService } from 'src/media/imagekit-storage.service';
 
 @Controller('messages')
 @UseGuards(AuthGuard)
@@ -34,7 +34,7 @@ export class MessagesController {
     private readonly messagesService: MessagesService,
     @Inject(forwardRef(() => ChatsGateway))
     private readonly chatsGateway: ChatsGateway,
-    private readonly b2: B2StorageService,
+    private readonly imagekit: ImageKitStorageService,
   ) {}
 
   /** JSON body (no multipart) — reliable for React Native text sends; avoids Android axios+FormData issues. */
@@ -73,25 +73,15 @@ export class MessagesController {
       const kind = file.mimetype?.startsWith('video/')
         ? MediaTypeEnum.VIDEO
         : MediaTypeEnum.IMAGE;
-      const protocol =
-        req.get('x-forwarded-proto') ||
-        (req as { protocol?: string }).protocol ||
-        'http';
-      const host = req.get('host');
-      const name = encodeURIComponent(file.filename || 'media');
-      let mediaUrl = `${protocol}://${host}/uploads/${name}`;
-      if (this.b2.isEnabled() && file.path) {
-        try {
-          const uid = String(req.user?._id ?? 'anon');
-          mediaUrl = await this.b2.uploadLocalAndUnlink(
-            file.path,
-            `messages/${uid}/${Date.now()}-${file.filename || 'media'}`,
-            file.mimetype || 'application/octet-stream',
-          );
-        } catch (e) {
-          this.logger.warn('B2 upload failed; using local /uploads URL', e);
-        }
+      if (!this.imagekit.isEnabled()) {
+        throw new Error('ImageKit is not configured');
       }
+      const uid = String(req.user?._id ?? 'anon');
+      const mediaUrl = await this.imagekit.uploadLocalAndUnlink(
+        file.path,
+        `messages/${uid}/${Date.now()}-${file.filename || 'media'}`,
+        file.mimetype || 'application/octet-stream',
+      );
       /** Static route is `app.use('/uploads', …)` in main.ts — path must include `/uploads/`. */
       createMessageDto.mediaFile = {
         url: mediaUrl,
