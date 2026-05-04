@@ -19,11 +19,15 @@ export class ImageKitStorageService {
     if (publicKey && privateKey && urlEndpoint) {
       this.privateKey = String(privateKey).trim().replace(/^"|"$/g, '');
       this.enabled = true;
-      this.logger.log('ImageKit storage enabled');
+      this.logger.log(
+        `ImageKit storage enabled publicKeyPrefix=${String(publicKey).slice(0, 12)}… urlEndpoint=${urlEndpoint}`,
+      );
     } else {
       this.privateKey = '';
       this.enabled = false;
-      this.logger.warn('ImageKit not configured');
+      this.logger.warn(
+        `ImageKit not configured (missing ${[!publicKey && 'IMAGE_KIT_PUBLIC_KEY', !privateKey && 'IMAGE_KIT_PRIVATE_KEY', !urlEndpoint && 'IMAGE_BASE_URL'].filter(Boolean).join(', ') || 'env'})`,
+      );
     }
   }
 
@@ -52,6 +56,10 @@ export class ImageKitStorageService {
   ): Promise<string> {
     this.ensureEnabled();
     const { fileName, folder } = this.toImageKitPathParts(objectKey);
+    const stat = await fs.stat(localPath).catch(() => null);
+    this.logger.log(
+      `[ImageKit upload] folder=${folder} fileName=${fileName} bytes=${stat?.size ?? '?'}`,
+    );
     const file = await fs.readFile(localPath);
     const form = new FormData();
     form.append('file', `data:application/octet-stream;base64,${file.toString('base64')}`);
@@ -69,8 +77,12 @@ export class ImageKitStorageService {
     });
     const uploaded = await res.json();
     if (!res.ok || !uploaded?.url) {
+      this.logger.error(
+        `[ImageKit upload] failed status=${res.status} message=${uploaded?.message ?? JSON.stringify(uploaded).slice(0, 400)}`,
+      );
       throw new Error(uploaded?.message || 'ImageKit upload failed');
     }
+    this.logger.log(`[ImageKit upload] ok url=${uploaded.url}`);
     return uploaded.url;
   }
 

@@ -14,6 +14,7 @@ import {
   UploadedFiles,
   HttpException,
   HttpStatus,
+  Logger,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { LoginDTO } from './dtos/loginUser.dto';
@@ -54,6 +55,8 @@ export const storage = {
 
 @Controller('users')
 export class UsersController {
+  private readonly logger = new Logger(UsersController.name);
+
   constructor(
     private readonly usersService: UsersService,
     private readonly notificationService: NotificationsService,
@@ -116,24 +119,56 @@ export class UsersController {
       profileImage?: Express.Multer.File[];
     },
   ) {
-    console.log('update', files);
-
     const host = req.get('host');
     const userId = String(req.user._id);
     const stamp = Date.now();
 
+    const fileMeta = (f?: Express.Multer.File) =>
+      f
+        ? {
+            originalname: f.originalname,
+            mimetype: f.mimetype,
+            size: f.size,
+          }
+        : null;
+
+    this.logger.log(
+      `[updateProfile] start userId=${userId} host=${host ?? '?'} bodyKeys=${JSON.stringify(Object.keys(body || {}))} multipart=${JSON.stringify({
+        profileImage: fileMeta(files?.profileImage?.[0]),
+        profileVideo: fileMeta(files?.profileVideo?.[0]),
+        videosCount: files?.videos?.length ?? 0,
+        videos: (files?.videos ?? []).map((v) => fileMeta(v)),
+      })}`,
+    );
+
+    try {
     if (files?.profileImage?.[0]) {
+      this.logger.log(
+        `[updateProfile] processing profileImage mimetype=${files.profileImage[0].mimetype} size=${files.profileImage[0].size}`,
+      );
       body.profileImage = await this.mediaService.processImageUpload(
         files.profileImage[0],
         host,
         `${userId}_pimg_${stamp}`,
       );
+      this.logger.log(
+        `[updateProfile] profileImage done urlPrefix=${String(body.profileImage).slice(0, 72)}…`,
+      );
     }
 
     let videoArr: { url: string; thumbnailUrl?: string }[] = [];
-    let previousVideos = body.previousVideos
-      ? JSON.parse(body.previousVideos as unknown as string)
-      : [];
+    let previousVideos: { url: string; thumbnailUrl?: string }[] = [];
+    if (body.previousVideos != null && String(body.previousVideos).trim() !== '') {
+      try {
+        const raw = body.previousVideos as unknown as string;
+        const parsed = JSON.parse(typeof raw === 'string' ? raw : JSON.stringify(raw));
+        previousVideos = Array.isArray(parsed)
+          ? (parsed as { url: string; thumbnailUrl?: string }[])
+          : [];
+      } catch {
+        previousVideos = [];
+      }
+    }
 
     const limits = await this.usersService.getCurrentTierLimits(String(req.user._id));
     const requestedVideoCount =
@@ -151,6 +186,9 @@ export class UsersController {
     }
 
     if (files?.videos?.length) {
+      this.logger.log(
+        `[updateProfile] processing gallery videos count=${files.videos.length}`,
+      );
       for (let i = 0; i < files.videos.length; i++) {
         const file = files.videos[i];
         const processed = await this.mediaService.processUploadedVideo(
@@ -162,13 +200,18 @@ export class UsersController {
           url: processed.url,
           thumbnailUrl: processed.thumbnailUrl || undefined,
         });
+        this.logger.log(
+          `[updateProfile] gallery video ${i + 1}/${files.videos.length} ok hasThumb=${Boolean(processed.thumbnailUrl)}`,
+        );
       }
       body.videos = videoArr;
     }
 
     if (previousVideos.length) {
       videoArr = [...previousVideos, ...videoArr];
-      console.log({ filePrevVideos: videoArr });
+      this.logger.log(
+        `[updateProfile] merged previousVideos count=${previousVideos.length} newVideos=${files?.videos?.length ?? 0} total=${videoArr.length}`,
+      );
       body.videos = videoArr;
     }
 
@@ -177,6 +220,9 @@ export class UsersController {
     }
 
     if (files?.profileVideo?.[0]) {
+      this.logger.log(
+        `[updateProfile] processing profileVideo mimetype=${files.profileVideo[0].mimetype} size=${files.profileVideo[0].size}`,
+      );
       const processed = await this.mediaService.processUploadedVideo(
         files.profileVideo[0],
         host,
@@ -184,9 +230,40 @@ export class UsersController {
       );
       body.profileVideo = processed.url;
       body.profileVideoThumbnail = processed.thumbnailUrl || undefined;
+      this.logger.log(
+        `[updateProfile] profileVideo done hasThumb=${Boolean(processed.thumbnailUrl)} videoPrefix=${String(processed.url).slice(0, 64)}…`,
+      );
     }
 
-    return this.usersService.findOneAndUpdate({ _id: req.user._id }, body);
+    this.logger.log(
+      `[updateProfile] saving userId=${userId} patchKeys=${JSON.stringify(Object.keys(body))} emptyVideos=${body.emptyVideos === true}`,
+    );
+    const saved = await this.usersService.findOneAndUpdate(
+      { _id: req.user._id },
+      body,
+    );
+    this.logger.log(`[updateProfile] success userId=${userId}`);
+    return saved;
+    } catch (e: any) {
+      if (e instanceof HttpException) {
+        throw e;
+      }
+      this.logger.error(
+        `[updateProfile] error userId=${userId}: ${e?.message ?? e}`,
+        e?.stack,
+      );
+      const msg =
+        typeof e?.message === 'string' ? e.message : 'Profile update failed';
+      throw new HttpException(
+        {
+          success: false,
+          message: msg,
+          statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+          data: null,
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 
   @Post('/blockUser')

@@ -9,6 +9,7 @@ import {
   MessageType,
 } from './schemas/chat-message.schema';
 import { IGetUserAuthInfoRequest } from '../interfaces';
+import { limitsForUser } from '../users/subscription-tier';
 
 @Injectable()
 export class ChatService {
@@ -145,6 +146,25 @@ export class ChatService {
       throw new HttpException('Cannot chat with yourself', HttpStatus.BAD_REQUEST);
     }
 
+    const me = await this.userModel
+      .findById(userId)
+      .select('connections subscriptionTier subscriptionExpiresAt')
+      .lean()
+      .exec();
+    const connectionIds = new Set(
+      ((me as any)?.connections || []).map((id: any) => String(id)),
+    );
+    const isConnected = connectionIds.has(String(otherUserId));
+    const tierLimits = limitsForUser(me as any);
+    const canDirectConnect = tierLimits.directMessagingWithoutMatch === true;
+
+    if (!isConnected && !canDirectConnect) {
+      throw new HttpException(
+        'You can message after you connect with this user. Creator Elite includes Direct Connect messaging.',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
     const sorted = [userId, otherUserId].sort();
     let chat = await this.chatModel
       .findOne({
@@ -169,7 +189,7 @@ export class ChatService {
       isGroup: false,
       lastMessage: null,
       lastMessageAt: null,
-      requestStatus: 'pending',
+      requestStatus: 'accepted',
       requestedBy: new Types.ObjectId(userId),
       requestedTo: new Types.ObjectId(otherUserId),
       lastReadAt: {},
@@ -177,6 +197,10 @@ export class ChatService {
 
     await this.userModel.updateOne(
       { _id: new Types.ObjectId(userId) },
+      { $addToSet: { chatIds: chat._id } },
+    );
+    await this.userModel.updateOne(
+      { _id: new Types.ObjectId(otherUserId) },
       { $addToSet: { chatIds: chat._id } },
     );
 

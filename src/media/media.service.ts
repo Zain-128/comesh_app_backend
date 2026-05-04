@@ -108,22 +108,38 @@ export class MediaService {
     _host: string,
     baseName: string,
   ): Promise<string> {
+    this.logger.log(
+      `[processImageUpload] in mimetype=${file?.mimetype} size=${file?.size} baseName=${baseName}`,
+    );
     await this.ensureProcessedDir();
     const safeBase = baseName.replace(/[^a-zA-Z0-9_-]/g, '');
     const outName = `${safeBase}.jpg`;
     const outPath = join(this.processedDir, outName);
-    await sharp(file.path)
-      .rotate()
-      .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality: 82, mozjpeg: true })
-      .toFile(outPath);
+    try {
+      await sharp(file.path, { failOn: 'none' })
+        .rotate()
+        .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 82, mozjpeg: true })
+        .toFile(outPath);
+    } catch (e: any) {
+      this.logger.error(
+        `processImageUpload sharp failed for ${file?.mimetype ?? '?'}: ${e?.message ?? e}`,
+      );
+      throw new Error(
+        `Could not process profile image (${e?.message || 'unsupported or corrupt file'}). Try another photo or export as JPEG.`,
+      );
+    }
+    this.logger.log(`[processImageUpload] sharp ok out=${outName}`);
     await this.safeUnlink(file.path);
 
     if (!this.imagekit.isEnabled()) {
       throw new Error('ImageKit is not configured');
     }
     const key = `processed/${outName}`;
-    return this.imagekit.uploadLocalAndUnlink(outPath, key, 'image/jpeg');
+    this.logger.log(`[processImageUpload] ImageKit upload key=${key}`);
+    const url = await this.imagekit.uploadLocalAndUnlink(outPath, key, 'image/jpeg');
+    this.logger.log(`[processImageUpload] done url=${url}`);
+    return url;
   }
 
   /**
@@ -136,6 +152,9 @@ export class MediaService {
     uniquePrefix: string,
   ): Promise<{ url: string; thumbnailUrl: string }> {
     const inputPath = file.path;
+    this.logger.log(
+      `[processUploadedVideo] in mimetype=${file?.mimetype} size=${file?.size} prefix=${uniquePrefix}`,
+    );
 
     const safePrefix = uniquePrefix.replace(/[^a-zA-Z0-9_-]/g, '');
     const outMp4Name = `${safePrefix}.mp4`;
@@ -146,7 +165,9 @@ export class MediaService {
     try {
       await this.ensureProcessedDir();
       await this.transcodeToMp4(inputPath, outMp4Path);
+      this.logger.log(`[processUploadedVideo] transcode ok out=${outMp4Name}`);
       const thumbOk = await this.extractThumbnail(outMp4Path, outThumbPath);
+      this.logger.log(`[processUploadedVideo] thumbnail ${thumbOk ? 'ok' : 'skipped'}`);
       await this.safeUnlink(inputPath);
 
       if (!this.imagekit.isEnabled()) {
@@ -154,6 +175,7 @@ export class MediaService {
       }
       const keyMp4 = `processed/${outMp4Name}`;
       const keyThumb = `processed/${outThumbName}`;
+      this.logger.log(`[processUploadedVideo] ImageKit upload mp4 key=${keyMp4}`);
       const url = await this.imagekit.uploadLocalFile(
         outMp4Path,
         keyMp4,
@@ -161,6 +183,7 @@ export class MediaService {
       );
       let thumbnailUrl = '';
       if (thumbOk) {
+        this.logger.log(`[processUploadedVideo] ImageKit upload thumb key=${keyThumb}`);
         thumbnailUrl = await this.imagekit.uploadLocalFile(
           outThumbPath,
           keyThumb,
@@ -169,6 +192,9 @@ export class MediaService {
       }
       await this.safeUnlink(outMp4Path);
       if (thumbOk) await this.safeUnlink(outThumbPath);
+      this.logger.log(
+        `[processUploadedVideo] done url=${url} thumb=${thumbnailUrl ? `${thumbnailUrl.slice(0, 64)}…` : '(none)'}`,
+      );
       return { url, thumbnailUrl };
     } catch (e: any) {
       this.logger.error(`Video processing/upload failed: ${e?.message ?? e}`);
