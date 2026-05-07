@@ -197,4 +197,9 @@ export class UpdateUserDTO {
 
   @IsOptional()
   pronouns?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => formBoolean(value))
+  @IsBoolean()
+  pushNotificationEnabled?: boolean;
 }
