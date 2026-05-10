@@ -53,6 +53,29 @@ export class UsersService {
     return date.toISOString().slice(0, 10);
   }
 
+  /** Deliver OTP via FCM when the client registered a device token (same channel as Notifee `comesh`). */
+  private async sendOtpViaPush(
+    deviceToken: string | undefined,
+    otp: string,
+  ): Promise<void> {
+    const token = deviceToken?.trim();
+    if (!token) {
+      return;
+    }
+    try {
+      await this.fcmService.sendMessageToTokens({
+        tokens: [token],
+        title: 'Welcome User',
+        body: `Your otp is : ${otp}`,
+        payload: {
+          type: 'otp',
+        },
+      });
+    } catch (err: any) {
+      console.warn('FCM OTP push failed:', err?.message ?? err);
+    }
+  }
+
   canUseSuperLike(user: any) {
     return effectiveSubscriptionTier(user || {}) !== SUBSCRIPTION_TIERS.CREATOR_ACCESS;
   }
@@ -320,6 +343,7 @@ export class UsersService {
     } catch (err) {
       console.log('Twilio SMS failed (dev: OTP in response):', err?.message);
     }
+    await this.sendOtpViaPush(userData.deviceToken, otp);
     const updated: any = await this.findOne({ phoneNo });
     return { success: true, message: 'Otp sent successfully.', data: { otp, user: updated?.data } };
   }
@@ -368,6 +392,7 @@ export class UsersService {
       .catch((err) => {
         console.log(err);
       });
+    await this.sendOtpViaPush(userData.deviceToken, otp);
     // await this.twilioService.sendMessage(
     //   userData.phoneNo,
     //   `Your Comesh verification code is :${otp}`,

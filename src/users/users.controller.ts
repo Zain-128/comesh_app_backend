@@ -24,6 +24,7 @@ import { SendOtpDTO } from './dtos/sendOTP.dto';
 import { ResetPasswordDTO } from './dtos/resetPassword.dto';
 import { IGetUserAuthInfoRequest, genericResponseType } from 'src/interfaces';
 import { UpdateUserDTO } from './dtos/updateUser.dto';
+import { UpdateNotificationsDto } from './dtos/updateNotifications.dto';
 import { AuthGuard } from 'src/guards/auth.guard';
 import { BlockUserDTO } from './dtos/blockUserDto';
 import { LikeUserDTO } from './dtos/likeUser';
@@ -425,7 +426,7 @@ export class UsersController {
   @UseGuards(AuthGuard)
   updateUser(
     @Req() req: IGetUserAuthInfoRequest,
-    @Body() body: { pushNotificationEnabled: boolean },
+    @Body() body: UpdateNotificationsDto,
   ) {
     return this.usersService.findOneAndUpdate({ _id: req.user._id }, body);
   }
