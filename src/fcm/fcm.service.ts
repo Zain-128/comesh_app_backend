@@ -23,6 +23,32 @@ export class FCMMessagingService {
       ]),
     );
   }
+
+  private tokenLabel(token: string | undefined): string {
+    if (!token) {
+      return 'empty';
+    }
+    return `len=${token.length} ${token.slice(0, 8)}...${token.slice(-8)}`;
+  }
+
+  private buildApnsAlert(title: string, body: string) {
+    return {
+      headers: {
+        'apns-priority': '10',
+        'apns-push-type': 'alert',
+      },
+      payload: {
+        aps: {
+          alert: {
+            title,
+            body,
+          },
+          sound: 'default',
+        },
+      },
+    };
+  }
+
   /** Must match RN `notifee.createChannel({ id: "comesh" })` (Splash2) or Android may drop heads-up. */
   private android: any = {
     priority: 'high',
@@ -32,24 +58,19 @@ export class FCMMessagingService {
     },
   };
 
-  /**
-   * Visible alerts (OTP, chat): priority 10 + sound — **not** content-available (priority 5),
-   * which targets background/silent pushes and often suppresses banners on iOS.
-   */
-  private apnsAlert = {
-    headers: {
-      'apns-priority': '10',
-    },
-    payload: {
-      aps: {
-        sound: 'default',
-      },
-    },
-  };
-
   async sendMessageToTokens(params: any): Promise<string[]> {
     const { title, body, payload, tokens } = params;
-    const data = this.normalizeDataPayload(payload as Record<string, unknown>);
+    const data = this.normalizeDataPayload({
+      title,
+      body,
+      ...(payload as Record<string, unknown> | undefined),
+    });
+    console.log('[CoMesh/FCM] sendMessageToTokens:start', {
+      tokens: (tokens || []).map((token: string) => this.tokenLabel(token)),
+      title,
+      body,
+      data,
+    });
     return await this.messaging
       .sendEachForMulticast({
         tokens: tokens,
@@ -59,10 +80,20 @@ export class FCMMessagingService {
           body: body,
         },
         android: this.android,
-        apns: this.apnsAlert,
+        apns: this.buildApnsAlert(title, body),
       })
       .then((response) => {
-        console.log({ response, b: response.responses[0].error });
+        console.log('[CoMesh/FCM] sendMessageToTokens:response', {
+          successCount: response.successCount,
+          failureCount: response.failureCount,
+          responses: response.responses.map((resp, idx) => ({
+            token: this.tokenLabel(tokens[idx]),
+            success: resp.success,
+            messageId: resp.messageId,
+            error: resp.error?.message,
+            code: resp.error?.code,
+          })),
+        });
         if (response.failureCount > 0) {
           const failedTokens: string[] = [];
           response.responses.forEach((resp, idx) => {
@@ -86,7 +117,11 @@ export class FCMMessagingService {
 
   async sendMessageToTopic(params: any): Promise<string> {
     const { title, body, payload, topic } = params;
-    const data = this.normalizeDataPayload(payload as Record<string, unknown>);
+    const data = this.normalizeDataPayload({
+      title,
+      body,
+      ...(payload as Record<string, unknown> | undefined),
+    });
     return await this.messaging
       .send({
         topic: topic,
@@ -96,7 +131,7 @@ export class FCMMessagingService {
           body: body,
         },
         android: this.android,
-        apns: this.apnsAlert,
+        apns: this.buildApnsAlert(title, body),
       })
       .catch((err) => {
         throw new HttpException(
@@ -115,7 +150,11 @@ export class FCMMessagingService {
    */
   async sendMessageToCondition(params: any): Promise<string> {
     const { title, body, payload, condition } = params;
-    const data = this.normalizeDataPayload(payload as Record<string, unknown>);
+    const data = this.normalizeDataPayload({
+      title,
+      body,
+      ...(payload as Record<string, unknown> | undefined),
+    });
     // sample condition: "'TopicA' in topics && ('TopicB' in topics || 'TopicC' in topics)"
     return await this.messaging
       .send({
@@ -126,7 +165,7 @@ export class FCMMessagingService {
           body: body,
         },
         android: this.android,
-        apns: this.apnsAlert,
+        apns: this.buildApnsAlert(title, body),
       })
       .catch((err) => {
         throw new HttpException(
