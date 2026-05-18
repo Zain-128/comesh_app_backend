@@ -27,8 +27,57 @@ function tryParseJson(value: unknown): unknown {
   }
 }
 
+/** niche[0], questionAndAnswers[0][question] → nested object for class-validator. */
+function unflattenBracketBody(flat: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+
+  for (const [key, rawValue] of Object.entries(flat)) {
+    const value = tryParseJson(rawValue);
+
+    if (!key.includes('[')) {
+      result[key] = value;
+      continue;
+    }
+
+    const segments = key.replace(/\]/g, '').split('[').filter(Boolean);
+    let cursor: Record<string, unknown> | unknown[] = result;
+
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      const isLast = i === segments.length - 1;
+      const nextSeg = segments[i + 1];
+      const nextIsIndex = nextSeg !== undefined && /^\d+$/.test(nextSeg);
+
+      if (isLast) {
+        if (Array.isArray(cursor)) {
+          cursor[Number(seg)] = value;
+        } else {
+          (cursor as Record<string, unknown>)[seg] = value;
+        }
+        continue;
+      }
+
+      if (Array.isArray(cursor)) {
+        const idx = Number(seg);
+        if (cursor[idx] === undefined) {
+          cursor[idx] = nextIsIndex ? [] : {};
+        }
+        cursor = cursor[idx] as Record<string, unknown> | unknown[];
+      } else {
+        const obj = cursor as Record<string, unknown>;
+        if (obj[seg] === undefined) {
+          obj[seg] = nextIsIndex ? [] : {};
+        }
+        cursor = obj[seg] as Record<string, unknown> | unknown[];
+      }
+    }
+  }
+
+  return result;
+}
+
 /**
- * Multipart bodies send arrays/objects as JSON strings; parse before ValidationPipe.
+ * Multipart: JSON strings and/or bracket fields → arrays/objects before ValidationPipe.
  */
 @Injectable()
 export class ParseMultipartJsonPipe implements PipeTransform {
@@ -36,12 +85,15 @@ export class ParseMultipartJsonPipe implements PipeTransform {
     if (!value || typeof value !== 'object') {
       return value;
     }
-    const out = { ...value };
-    for (const key of Object.keys(out)) {
+    const flat = { ...value };
+    const nested = unflattenBracketBody(flat);
+
+    for (const key of Object.keys(nested)) {
       if (JSON_FIELD_NAMES.has(key)) {
-        out[key] = tryParseJson(out[key]);
+        nested[key] = tryParseJson(nested[key]);
       }
     }
-    return out;
+
+    return nested;
   }
 }
