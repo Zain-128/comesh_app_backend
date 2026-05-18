@@ -20,6 +20,23 @@ function formBoolean(value: unknown): unknown {
   return value;
 }
 
+/** Multipart fields often arrive as JSON strings (e.g. questionAndAnswers, niche). */
+function formJson(value: unknown): unknown {
+  if (value === undefined || value === null || value === '') return value;
+  if (typeof value === 'string') {
+    const t = value.trim();
+    if (!t) return value;
+    if (t.startsWith('[') || t.startsWith('{')) {
+      try {
+        return JSON.parse(t);
+      } catch {
+        return value;
+      }
+    }
+  }
+  return value;
+}
+
 class OtpInfoDTO {
   @IsString()
   otp: string;
@@ -102,8 +119,8 @@ export class UpdateUserDTO {
   dob?: string;
 
   @IsOptional()
-  @IsNotEmpty()
-  @ValidateNested({ each: true })
+  @Transform(({ value }) => formJson(value))
+  @ValidateNested()
   @Type(() => LocationDTO)
   location?: LocationDTO;
 
@@ -112,8 +129,10 @@ export class UpdateUserDTO {
   address?: string;
 
   @IsOptional()
+  @Transform(({ value }) => formJson(value))
   @IsArray()
-  niche?: [string];
+  @IsString({ each: true })
+  niche?: string[];
 
   @IsOptional()
   @IsNotEmpty()
@@ -139,7 +158,8 @@ export class UpdateUserDTO {
   followers?: string;
 
   @IsOptional()
-  @ValidateNested({ each: true })
+  @Transform(({ value }) => formJson(value))
+  @ValidateNested()
   @Type(() => SocialMediaProfilesDTO)
   socialMediaProfiles?: SocialMediaProfilesDTO;
 
@@ -169,9 +189,11 @@ export class UpdateUserDTO {
   showLocation?: boolean;
 
   @IsOptional()
+  @Transform(({ value }) => formJson(value))
+  @IsArray()
   @ValidateNested({ each: true })
   @Type(() => QuestionAndAnswerDTO)
-  questionAndAnswers?: QuestionAndAnswerDTO;
+  questionAndAnswers?: QuestionAndAnswerDTO[];
 
   @IsOptional()
   @Transform(({ value }) => formBoolean(value))

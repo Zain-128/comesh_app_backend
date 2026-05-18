@@ -13,7 +13,14 @@ if (typeof global.SlowBuffer === 'undefined') {
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.enableCors();
-  app.useGlobalPipes(new ValidationPipe());
+  app.useGlobalPipes(
+    new ValidationPipe({
+      /** Required so @Transform (e.g. formJson for multipart niche / questionAndAnswers) runs. */
+      transform: true,
+      transformOptions: { enableImplicitConversion: true },
+      whitelist: true,
+    }),
+  );
 
   app.use('/uploads', express.static(join(process.cwd(), 'uploads')));
 

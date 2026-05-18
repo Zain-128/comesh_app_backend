@@ -177,6 +177,10 @@ export class User {
   @Prop({ default: '' })
   profileVideoThumbnail: string;
 
+  /** True while gallery/profile videos are transcoding after upload. */
+  @Prop({ default: false })
+  mediaProcessing: boolean;
+
   @Prop({})
   gender: string;
 

@@ -11,6 +11,7 @@ import { MessagingModule } from 'src/fcm/fcm.module';
 import { SendgridService } from 'src/sendgrid/sendgrid.service';
 import { MediaModule } from 'src/media/media.module';
 import { ChatsModule } from 'src/chats/chats.module';
+import { ProfileMediaProcessorService } from './profile-media.processor';
 
 @Module({
   imports: [
@@ -24,7 +25,7 @@ import { ChatsModule } from 'src/chats/chats.module';
     forwardRef(() => ChatsModule),
   ],
   exports: [MongooseModule.forFeature([{ name: 'User', schema: UserSchema }])],
-  providers: [UsersService, SendgridService],
+  providers: [UsersService, SendgridService, ProfileMediaProcessorService],
   controllers: [UsersController],
 })
 export class UsersModule {}

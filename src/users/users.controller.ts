@@ -32,6 +32,7 @@ import { NotificationsService } from 'src/notifications/notifications.service';
 import { NotificationEnum } from 'src/notifications/enums';
 import { ChatsService } from 'src/chats/chats.service';
 import { MediaService } from 'src/media/media.service';
+import { ProfileMediaProcessorService } from './profile-media.processor';
 
 import { diskStorage } from 'multer';
 import { extname } from 'path';
@@ -41,6 +42,7 @@ import {
 } from '@nestjs/platform-express';
 import { SuperLikeUserDTO } from './dtos/superLikeUser.dto';
 import { LogRequestPipe } from 'src/pipes/logs.pipe';
+import { ParseMultipartJsonPipe } from 'src/pipes/parse-multipart-json.pipe';
 import { AdminLoginDTO } from './dtos/adminLogin.dto';
 
 export const storage = {
@@ -63,6 +65,7 @@ export class UsersController {
     private readonly notificationService: NotificationsService,
     private readonly chatsService: ChatsService,
     private readonly mediaService: MediaService,
+    private readonly profileMediaProcessor: ProfileMediaProcessorService,
   ) {}
 
   @Post('/adminRegister')
@@ -97,7 +100,8 @@ export class UsersController {
   @Put('/updateProfile')
   @UsePipes(
     LogRequestPipe,
-    new ValidationPipe({ transform: true }),
+    ParseMultipartJsonPipe,
+    new ValidationPipe({ transform: true, whitelist: true }),
   )
   @UseGuards(AuthGuard)
   @UseInterceptors(
@@ -143,21 +147,6 @@ export class UsersController {
     );
 
     try {
-    if (files?.profileImage?.[0]) {
-      this.logger.log(
-        `[updateProfile] processing profileImage mimetype=${files.profileImage[0].mimetype} size=${files.profileImage[0].size}`,
-      );
-      body.profileImage = await this.mediaService.processImageUpload(
-        files.profileImage[0],
-        host,
-        `${userId}_pimg_${stamp}`,
-      );
-      this.logger.log(
-        `[updateProfile] profileImage done urlPrefix=${String(body.profileImage).slice(0, 72)}…`,
-      );
-    }
-
-    let videoArr: { url: string; thumbnailUrl?: string }[] = [];
     let previousVideos: { url: string; thumbnailUrl?: string }[] = [];
     if (body.previousVideos != null && String(body.previousVideos).trim() !== '') {
       try {
@@ -186,33 +175,65 @@ export class UsersController {
       );
     }
 
-    if (files?.videos?.length) {
-      this.logger.log(
-        `[updateProfile] processing gallery videos count=${files.videos.length}`,
-      );
-      for (let i = 0; i < files.videos.length; i++) {
-        const file = files.videos[i];
-        const processed = await this.mediaService.processUploadedVideo(
-          file,
+    const hasIncomingVideos = Boolean(
+      files?.profileVideo?.[0] || (files?.videos?.length ?? 0) > 0,
+    );
+
+    /** Videos: save profile fields now; transcode + ImageKit in background (client does not wait). */
+    if (hasIncomingVideos) {
+      if (files?.profileImage?.[0]) {
+        body.profileImage = await this.mediaService.processImageUpload(
+          files.profileImage[0],
           host,
-          `${userId}_v_${stamp}_${i}`,
-        );
-        videoArr.push({
-          url: processed.url,
-          thumbnailUrl: processed.thumbnailUrl || undefined,
-        });
-        this.logger.log(
-          `[updateProfile] gallery video ${i + 1}/${files.videos.length} ok hasThumb=${Boolean(processed.thumbnailUrl)}`,
+          `${userId}_pimg_${stamp}`,
         );
       }
-      body.videos = videoArr;
+
+      if (body.emptyVideos === true) {
+        body.videos = [];
+      } else if (previousVideos.length) {
+        body.videos = previousVideos;
+      }
+
+      delete (body as { profileVideo?: string }).profileVideo;
+      delete (body as { profileVideoThumbnail?: string }).profileVideoThumbnail;
+      delete (body as { previousVideos?: string }).previousVideos;
+      body.mediaProcessing = true;
+
+      const saved = await this.usersService.findOneAndUpdate(
+        { _id: req.user._id },
+        body,
+      );
+
+      this.profileMediaProcessor.schedule({
+        userId,
+        host,
+        stamp,
+        previousVideos,
+        emptyVideos: body.emptyVideos === true,
+        profileImage: undefined,
+        profileVideo: files?.profileVideo?.[0],
+        galleryVideos: files?.videos ?? [],
+      });
+
+      this.logger.log(
+        `[updateProfile] accepted userId=${userId} mediaProcessing=true (background)`,
+      );
+      return { ...saved, mediaProcessing: true };
     }
 
-    if (previousVideos.length) {
-      videoArr = [...previousVideos, ...videoArr];
-      this.logger.log(
-        `[updateProfile] merged previousVideos count=${previousVideos.length} newVideos=${files?.videos?.length ?? 0} total=${videoArr.length}`,
+    if (files?.profileImage?.[0]) {
+      body.profileImage = await this.mediaService.processImageUpload(
+        files.profileImage[0],
+        host,
+        `${userId}_pimg_${stamp}`,
       );
+    }
+
+    let videoArr: { url: string; thumbnailUrl?: string }[] = [];
+
+    if (previousVideos.length) {
+      videoArr = [...previousVideos];
       body.videos = videoArr;
     }
 
@@ -220,21 +241,7 @@ export class UsersController {
       body.videos = [];
     }
 
-    if (files?.profileVideo?.[0]) {
-      this.logger.log(
-        `[updateProfile] processing profileVideo mimetype=${files.profileVideo[0].mimetype} size=${files.profileVideo[0].size}`,
-      );
-      const processed = await this.mediaService.processUploadedVideo(
-        files.profileVideo[0],
-        host,
-        `${userId}_pv_${stamp}`,
-      );
-      body.profileVideo = processed.url;
-      body.profileVideoThumbnail = processed.thumbnailUrl || undefined;
-      this.logger.log(
-        `[updateProfile] profileVideo done hasThumb=${Boolean(processed.thumbnailUrl)} videoPrefix=${String(processed.url).slice(0, 64)}…`,
-      );
-    }
+    body.mediaProcessing = false;
 
     this.logger.log(
       `[updateProfile] saving userId=${userId} patchKeys=${JSON.stringify(Object.keys(body))} emptyVideos=${body.emptyVideos === true}`,
