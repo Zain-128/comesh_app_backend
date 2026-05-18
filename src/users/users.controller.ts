@@ -35,7 +35,7 @@ import { MediaService } from 'src/media/media.service';
 import { ProfileMediaProcessorService } from './profile-media.processor';
 
 import { diskStorage } from 'multer';
-import { extname } from 'path';
+import { basename, extname, join } from 'path';
 import {
   FileFieldsInterceptor,
   FileInterceptor,
@@ -45,13 +45,19 @@ import { LogRequestPipe } from 'src/pipes/logs.pipe';
 import { ParseMultipartJsonPipe } from 'src/pipes/parse-multipart-json.pipe';
 import { AdminLoginDTO } from './dtos/adminLogin.dto';
 
+const UPLOADS_DIR = join(process.cwd(), 'uploads');
+
 export const storage = {
   storage: diskStorage({
-    destination: './uploads',
+    destination: UPLOADS_DIR,
     filename: (req: any, file, cb) => {
       const authReq = req as IGetUserAuthInfoRequest;
-      const filename: string = (authReq?.user?._id ?? '') + file.originalname;
-      cb(null, filename);
+      const userId = String(authReq?.user?._id ?? 'anon');
+      const safeOriginal = basename(file.originalname || 'upload').replace(
+        /[^a-zA-Z0-9._-]/g,
+        '_',
+      );
+      cb(null, `${userId}_${safeOriginal}`);
     },
   }),
 };

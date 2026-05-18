@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { execFile } from 'child_process';
 import { promises as fs } from 'fs';
 import { promisify } from 'util';
-import { join } from 'path';
+import { isAbsolute, join, resolve } from 'path';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import sharp from 'sharp';
 import { ImageKitStorageService } from './imagekit-storage.service';
@@ -27,6 +27,32 @@ export class MediaService {
     } catch {
       /* ignore */
     }
+  }
+
+  /** Multer may store a relative path; ffmpeg needs an absolute path that exists on disk. */
+  private async resolveExistingUploadPath(
+    file: Express.Multer.File,
+  ): Promise<string> {
+    const candidates = [
+      file.path,
+      join(process.cwd(), file.path),
+      join(process.cwd(), 'uploads', file.filename),
+    ].filter(Boolean) as string[];
+
+    for (const raw of candidates) {
+      const abs = isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
+      try {
+        await fs.access(abs);
+        return abs;
+      } catch {
+        /* try next */
+      }
+    }
+
+    throw new Error(
+      `Uploaded file missing on disk (tried: ${candidates.join(', ')}). ` +
+        'On Render, redeploy after uploads/ path fix; retry the upload.',
+    );
   }
 
   /**
@@ -108,15 +134,16 @@ export class MediaService {
     _host: string,
     baseName: string,
   ): Promise<string> {
+    const inputPath = await this.resolveExistingUploadPath(file);
     this.logger.log(
-      `[processImageUpload] in mimetype=${file?.mimetype} size=${file?.size} baseName=${baseName}`,
+      `[processImageUpload] in mimetype=${file?.mimetype} size=${file?.size} baseName=${baseName} path=${inputPath}`,
     );
     await this.ensureProcessedDir();
     const safeBase = baseName.replace(/[^a-zA-Z0-9_-]/g, '');
     const outName = `${safeBase}.jpg`;
     const outPath = join(this.processedDir, outName);
     try {
-      await sharp(file.path, { failOn: 'none' })
+      await sharp(inputPath, { failOn: 'none' })
         .rotate()
         .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
         .jpeg({ quality: 82, mozjpeg: true })
@@ -130,7 +157,7 @@ export class MediaService {
       );
     }
     this.logger.log(`[processImageUpload] sharp ok out=${outName}`);
-    await this.safeUnlink(file.path);
+    await this.safeUnlink(inputPath);
 
     if (!this.imagekit.isEnabled()) {
       throw new Error('ImageKit is not configured');
@@ -151,9 +178,9 @@ export class MediaService {
     _host: string,
     uniquePrefix: string,
   ): Promise<{ url: string; thumbnailUrl: string }> {
-    const inputPath = file.path;
+    const inputPath = await this.resolveExistingUploadPath(file);
     this.logger.log(
-      `[processUploadedVideo] in mimetype=${file?.mimetype} size=${file?.size} prefix=${uniquePrefix}`,
+      `[processUploadedVideo] in mimetype=${file?.mimetype} size=${file?.size} prefix=${uniquePrefix} path=${inputPath}`,
     );
 
     const safePrefix = uniquePrefix.replace(/[^a-zA-Z0-9_-]/g, '');

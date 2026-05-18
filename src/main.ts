@@ -3,6 +3,7 @@ import { AppModule } from './app.module';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import { join } from 'path';
+import { mkdir } from 'fs/promises';
 import * as express from 'express';
 
 // Polyfill SlowBuffer for Node 25+ compatibility with legacy libs
@@ -11,6 +12,8 @@ if (typeof global.SlowBuffer === 'undefined') {
 }
 
 async function bootstrap() {
+  await mkdir(join(process.cwd(), 'uploads', 'processed'), { recursive: true });
+
   const app = await NestFactory.create(AppModule);
   app.enableCors();
   app.useGlobalPipes(
