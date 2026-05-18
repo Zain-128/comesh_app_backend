@@ -56,8 +56,8 @@ export class MediaService {
   }
 
   /**
-   * Transcode to H.264 MP4 (max width 1280), faststart for streaming.
-   * Falls back to video-only if audio track causes issues.
+   * Compress/transcode to H.264 MP4 (max width 960, CRF 26), faststart for streaming.
+   * No separate thumbnail pass — UI uses video URL or client picker stills.
    */
   private async transcodeToMp4(inputPath: string, outputPath: string): Promise<void> {
     const withAudio = [
@@ -65,13 +65,13 @@ export class MediaService {
       '-i',
       inputPath,
       '-vf',
-      "scale='min(1280,iw)':-2",
+      "scale='min(960,iw)':-2",
       '-c:v',
       'libx264',
       '-preset',
       'veryfast',
       '-crf',
-      '23',
+      '26',
       '-c:a',
       'aac',
       '-b:a',
@@ -91,39 +91,19 @@ export class MediaService {
       '-i',
       inputPath,
       '-vf',
-      "scale='min(1280,iw)':-2",
+      "scale='min(960,iw)':-2",
       '-c:v',
       'libx264',
       '-preset',
       'veryfast',
       '-crf',
-      '23',
+      '26',
       '-an',
       '-movflags',
       '+faststart',
       outputPath,
     ];
     await execFileAsync(this.ffmpegPath, videoOnly);
-  }
-
-  private async extractThumbnail(
-    videoPath: string,
-    outputJpgPath: string,
-  ): Promise<boolean> {
-    const attempts: string[][] = [
-      ['-y', '-ss', '00:00:01', '-i', videoPath, '-frames:v', '1', '-q:v', '2', outputJpgPath],
-      ['-y', '-ss', '00:00:00.250', '-i', videoPath, '-frames:v', '1', '-q:v', '2', outputJpgPath],
-      ['-y', '-i', videoPath, '-frames:v', '1', '-q:v', '2', outputJpgPath],
-    ];
-    for (const args of attempts) {
-      try {
-        await execFileAsync(this.ffmpegPath, args);
-        return true;
-      } catch {
-        /* try next */
-      }
-    }
-    return false;
   }
 
   /**
@@ -170,8 +150,8 @@ export class MediaService {
   }
 
   /**
-   * Transcode uploaded video, generate thumbnail, delete original upload.
-   * On failure, returns original multer URLs (legacy behaviour).
+   * Compress uploaded video (single ffmpeg pass) → ImageKit MP4.
+   * thumbnailUrl left empty; app uses compressed video or profile image for posters.
    */
   async processUploadedVideo(
     file: Express.Multer.File,
@@ -180,54 +160,36 @@ export class MediaService {
   ): Promise<{ url: string; thumbnailUrl: string }> {
     const inputPath = await this.resolveExistingUploadPath(file);
     this.logger.log(
-      `[processUploadedVideo] in mimetype=${file?.mimetype} size=${file?.size} prefix=${uniquePrefix} path=${inputPath}`,
+      `[processUploadedVideo] compress in mimetype=${file?.mimetype} size=${file?.size} prefix=${uniquePrefix} path=${inputPath}`,
     );
 
     const safePrefix = uniquePrefix.replace(/[^a-zA-Z0-9_-]/g, '');
     const outMp4Name = `${safePrefix}.mp4`;
-    const outThumbName = `${safePrefix}_thumb.jpg`;
     const outMp4Path = join(this.processedDir, outMp4Name);
-    const outThumbPath = join(this.processedDir, outThumbName);
 
     try {
       await this.ensureProcessedDir();
       await this.transcodeToMp4(inputPath, outMp4Path);
-      this.logger.log(`[processUploadedVideo] transcode ok out=${outMp4Name}`);
-      const thumbOk = await this.extractThumbnail(outMp4Path, outThumbPath);
-      this.logger.log(`[processUploadedVideo] thumbnail ${thumbOk ? 'ok' : 'skipped'}`);
+      this.logger.log(`[processUploadedVideo] compress ok out=${outMp4Name}`);
       await this.safeUnlink(inputPath);
 
       if (!this.imagekit.isEnabled()) {
         throw new Error('ImageKit is not configured');
       }
       const keyMp4 = `processed/${outMp4Name}`;
-      const keyThumb = `processed/${outThumbName}`;
       this.logger.log(`[processUploadedVideo] ImageKit upload mp4 key=${keyMp4}`);
       const url = await this.imagekit.uploadLocalFile(
         outMp4Path,
         keyMp4,
         'video/mp4',
       );
-      let thumbnailUrl = '';
-      if (thumbOk) {
-        this.logger.log(`[processUploadedVideo] ImageKit upload thumb key=${keyThumb}`);
-        thumbnailUrl = await this.imagekit.uploadLocalFile(
-          outThumbPath,
-          keyThumb,
-          'image/jpeg',
-        );
-      }
       await this.safeUnlink(outMp4Path);
-      if (thumbOk) await this.safeUnlink(outThumbPath);
-      this.logger.log(
-        `[processUploadedVideo] done url=${url} thumb=${thumbnailUrl ? `${thumbnailUrl.slice(0, 64)}…` : '(none)'}`,
-      );
-      return { url, thumbnailUrl };
+      this.logger.log(`[processUploadedVideo] done url=${url.slice(0, 64)}…`);
+      return { url, thumbnailUrl: '' };
     } catch (e: any) {
-      this.logger.error(`Video processing/upload failed: ${e?.message ?? e}`);
+      this.logger.error(`Video compress/upload failed: ${e?.message ?? e}`);
       await this.safeUnlink(inputPath);
       await this.safeUnlink(outMp4Path);
-      await this.safeUnlink(outThumbPath);
       throw e;
     }
   }
