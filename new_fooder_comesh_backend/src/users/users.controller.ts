@@ -1,0 +1,560 @@
+import {
+  Controller,
+  Post,
+  Body,
+  Put,
+  Req,
+  UseGuards,
+  Get,
+  Param,
+  UseInterceptors,
+  UploadedFile,
+  ValidationPipe,
+  UsePipes,
+  UploadedFiles,
+  HttpException,
+  HttpStatus,
+  Logger,
+} from '@nestjs/common';
+import { UsersService } from './users.service';
+import { LoginDTO } from './dtos/loginUser.dto';
+import { CreateUserDTO } from './dtos/createUser.dto';
+import { VerifyUserDTO } from './dtos/verifyUser.dto';
+import { SendOtpDTO } from './dtos/sendOTP.dto';
+import { ResetPasswordDTO } from './dtos/resetPassword.dto';
+import { IGetUserAuthInfoRequest, genericResponseType } from 'src/interfaces';
+import { UpdateUserDTO } from './dtos/updateUser.dto';
+import { UpdateNotificationsDto } from './dtos/updateNotifications.dto';
+import { AuthGuard } from 'src/guards/auth.guard';
+import { BlockUserDTO } from './dtos/blockUserDto';
+import { LikeUserDTO } from './dtos/likeUser';
+import { NotificationsService } from 'src/notifications/notifications.service';
+import { NotificationEnum } from 'src/notifications/enums';
+import { ChatsService } from 'src/chats/chats.service';
+import { MediaService } from 'src/media/media.service';
+import { ProfileMediaProcessorService } from './profile-media.processor';
+
+import { diskStorage } from 'multer';
+import { basename, extname, join } from 'path';
+import {
+  FileFieldsInterceptor,
+  FileInterceptor,
+} from '@nestjs/platform-express';
+import { SuperLikeUserDTO } from './dtos/superLikeUser.dto';
+import { LogRequestPipe } from 'src/pipes/logs.pipe';
+import { ParseMultipartJsonPipe } from 'src/pipes/parse-multipart-json.pipe';
+import { AdminLoginDTO } from './dtos/adminLogin.dto';
+
+const UPLOADS_DIR = join(process.cwd(), 'uploads');
+
+export const storage = {
+  storage: diskStorage({
+    destination: UPLOADS_DIR,
+    filename: (req: any, file, cb) => {
+      const authReq = req as IGetUserAuthInfoRequest;
+      const userId = String(authReq?.user?._id ?? 'anon');
+      const safeOriginal = basename(file.originalname || 'upload').replace(
+        /[^a-zA-Z0-9._-]/g,
+        '_',
+      );
+      cb(null, `${userId}_${safeOriginal}`);
+    },
+  }),
+};
+
+@Controller('users')
+export class UsersController {
+  private readonly logger = new Logger(UsersController.name);
+
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly notificationService: NotificationsService,
+    private readonly chatsService: ChatsService,
+    private readonly mediaService: MediaService,
+    private readonly profileMediaProcessor: ProfileMediaProcessorService,
+  ) {}
+
+  @Post('/adminRegister')
+  adminRegister(@Body() body: AdminLoginDTO) {
+    return this.usersService.adminRegister(body);
+  }
+  @Post('/sendOtp')
+  sendOtp(@Body() body: SendOtpDTO) {
+    return this.usersService.sendOtp(body);
+  }
+
+  @Put('/verifyUser')
+  verifyUser(@Body() body: VerifyUserDTO) {
+    return this.usersService.verifyUser(body);
+  }
+
+  @Post('/login')
+  loginUser(@Body() body: LoginDTO): Promise<genericResponseType> {
+    return this.usersService.login(body);
+  }
+
+  @Post('/adminLogin')
+  adminLogin(@Body() body: AdminLoginDTO): Promise<genericResponseType> {
+    return this.usersService.adminLogin(body);
+  }
+
+  @Post('/forgetPassword')
+  forgetPassword(@Body() body: SendOtpDTO) {
+    return this.usersService.sendOtp(body);
+  }
+
+  @Put('/updateProfile')
+  @UsePipes(
+    LogRequestPipe,
+    ParseMultipartJsonPipe,
+    new ValidationPipe({ transform: true, whitelist: true }),
+  )
+  @UseGuards(AuthGuard)
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [
+        { name: 'profileVideo', maxCount: 1 },
+        { name: 'videos', maxCount: 6 },
+        { name: 'profileImage', maxCount: 1 },
+      ],
+      storage,
+    ),
+  )
+  async updateProfile(
+    @Req() req: IGetUserAuthInfoRequest,
+    @Body() body: UpdateUserDTO,
+    @UploadedFiles()
+    files: {
+      videos?: Express.Multer.File[];
+      profileVideo?: Express.Multer.File[];
+      profileImage?: Express.Multer.File[];
+    },
+  ) {
+    const host = req.get('host');
+    const userId = String(req.user._id);
+    const stamp = Date.now();
+
+    const fileMeta = (f?: Express.Multer.File) =>
+      f
+        ? {
+            originalname: f.originalname,
+            mimetype: f.mimetype,
+            size: f.size,
+          }
+        : null;
+
+    this.logger.log(
+      `[updateProfile] start userId=${userId} host=${host ?? '?'} bodyKeys=${JSON.stringify(Object.keys(body || {}))} multipart=${JSON.stringify({
+        profileImage: fileMeta(files?.profileImage?.[0]),
+        profileVideo: fileMeta(files?.profileVideo?.[0]),
+        videosCount: files?.videos?.length ?? 0,
+        videos: (files?.videos ?? []).map((v) => fileMeta(v)),
+      })}`,
+    );
+
+    try {
+    let previousVideos: { url: string; thumbnailUrl?: string }[] = [];
+    if (body.previousVideos != null && String(body.previousVideos).trim() !== '') {
+      try {
+        const raw = body.previousVideos as unknown as string;
+        const parsed = JSON.parse(typeof raw === 'string' ? raw : JSON.stringify(raw));
+        previousVideos = Array.isArray(parsed)
+          ? (parsed as { url: string; thumbnailUrl?: string }[])
+          : [];
+      } catch {
+        previousVideos = [];
+      }
+    }
+
+    const limits = await this.usersService.getCurrentTierLimits(String(req.user._id));
+    const requestedVideoCount =
+      (Array.isArray(previousVideos) ? previousVideos.length : 0) +
+      (files?.videos?.length || 0);
+    if (requestedVideoCount > limits.maxProfileVideos) {
+      throw new HttpException(
+        {
+          success: false,
+          message: `Your current plan allows up to ${limits.maxProfileVideos} videos`,
+          data: null,
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const hasIncomingVideos = Boolean(
+      files?.profileVideo?.[0] || (files?.videos?.length ?? 0) > 0,
+    );
+
+    /** Videos: save profile fields now; transcode + ImageKit in background (client does not wait). */
+    if (hasIncomingVideos) {
+      if (files?.profileImage?.[0]) {
+        body.profileImage = await this.mediaService.processImageUpload(
+          files.profileImage[0],
+          host,
+          `${userId}_pimg_${stamp}`,
+        );
+      }
+
+      if (body.emptyVideos === true) {
+        body.videos = [];
+      } else if (previousVideos.length) {
+        body.videos = previousVideos;
+      }
+
+      delete (body as { profileVideo?: string }).profileVideo;
+      delete (body as { profileVideoThumbnail?: string }).profileVideoThumbnail;
+      delete (body as { previousVideos?: string }).previousVideos;
+      body.mediaProcessing = true;
+
+      const saved = await this.usersService.findOneAndUpdate(
+        { _id: req.user._id },
+        body,
+      );
+
+      this.profileMediaProcessor.schedule({
+        userId,
+        host,
+        stamp,
+        previousVideos,
+        emptyVideos: body.emptyVideos === true,
+        profileImage: undefined,
+        profileVideo: files?.profileVideo?.[0],
+        galleryVideos: files?.videos ?? [],
+      });
+
+      this.logger.log(
+        `[updateProfile] accepted userId=${userId} mediaProcessing=true (background)`,
+      );
+      return { ...saved, mediaProcessing: true };
+    }
+
+    if (files?.profileImage?.[0]) {
+      body.profileImage = await this.mediaService.processImageUpload(
+        files.profileImage[0],
+        host,
+        `${userId}_pimg_${stamp}`,
+      );
+    }
+
+    let videoArr: { url: string; thumbnailUrl?: string }[] = [];
+
+    if (previousVideos.length) {
+      videoArr = [...previousVideos];
+      body.videos = videoArr;
+    }
+
+    if (body && body.emptyVideos == true) {
+      body.videos = [];
+    }
+
+    body.mediaProcessing = false;
+
+    this.logger.log(
+      `[updateProfile] saving userId=${userId} patchKeys=${JSON.stringify(Object.keys(body))} emptyVideos=${body.emptyVideos === true}`,
+    );
+    const saved = await this.usersService.findOneAndUpdate(
+      { _id: req.user._id },
+      body,
+    );
+    this.logger.log(`[updateProfile] success userId=${userId}`);
+    return saved;
+    } catch (e: any) {
+      if (e instanceof HttpException) {
+        throw e;
+      }
+      this.logger.error(
+        `[updateProfile] error userId=${userId}: ${e?.message ?? e}`,
+        e?.stack,
+      );
+      const msg =
+        typeof e?.message === 'string' ? e.message : 'Profile update failed';
+      throw new HttpException(
+        {
+          success: false,
+          message: msg,
+          statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+          data: null,
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  @Post('/blockUser')
+  @UseGuards(AuthGuard)
+  addUserToBlockList(
+    @Req() req: IGetUserAuthInfoRequest,
+    @Body() body: BlockUserDTO,
+  ) {
+    console.log({ user: req.user });
+    return this.usersService.findOneAndUpdate(
+      { _id: req.user._id },
+      {
+        $push: {
+          blockUsers: {
+            blockedUserId: body.userToBlock,
+            reason: body.reason,
+          },
+        },
+      },
+    );
+  }
+
+  @Post('/likeUser')
+  @UseGuards(AuthGuard)
+  async likeUsers(
+    @Req() req: IGetUserAuthInfoRequest,
+    @Body() body: LikeUserDTO,
+  ) {
+    const swipeCheck = await this.usersService.consumeSwipeForLike(String(req.user._id));
+    if (!swipeCheck.success) {
+      return swipeCheck;
+    }
+
+    if (String(req.user._id) === String(body.userLikedByMe)) {
+      return {
+        success: false,
+        message: 'You cannot like your own profile',
+        data: null,
+      };
+    }
+
+    let alreadyLikedByOtherUser = await this.usersService.userModel.findOne({
+      _id: req.user._id,
+      likedBySomeone: body.userLikedByMe,
+    });
+
+    let updateUser;
+
+    if (alreadyLikedByOtherUser) {
+      // create chat
+      console.log('already like by other user');
+
+      updateUser = await this.usersService.findOneAndUpdate(
+        { _id: req.user._id },
+        {
+          $push: { likedByMe: body.userLikedByMe },
+          $pull: { unLikedByMe: body.userLikedByMe },
+        },
+      );
+
+      await this.usersService.findOneAndUpdate(
+        { _id: body.userLikedByMe },
+        {
+          $push: { likedBySomeone: req.user._id },
+        },
+      );
+
+      await this.chatsService.create({
+        chatName: 'Match',
+        users: [req.user._id as any, body.userLikedByMe as any],
+        latestMessage: '',
+      });
+
+      console.log({
+        userLikedByMe: body.userLikedByMe,
+        currentUser: req.user._id,
+      });
+    } else {
+      // console.log('else block');
+      updateUser = await this.usersService.findOneAndUpdate(
+        { _id: req.user._id },
+        {
+          $push: { likedByMe: body.userLikedByMe },
+          $pull: { unLikedByMe: body.userLikedByMe },
+        },
+      );
+
+      await this.usersService.findOneAndUpdate(
+        { _id: body.userLikedByMe },
+        {
+          $push: { likedBySomeone: req.user._id },
+        },
+      );
+    }
+
+    if (updateUser.success == true) {
+      this.notificationService.create({
+        to: body.userLikedByMe,
+        from: req.user._id,
+        type: NotificationEnum.LIKE,
+        title: 'New Like',
+        description: `Congratulations! You have received a new like from ${updateUser.data.firstName} ${updateUser.data.lastName}`,
+      });
+    }
+    return updateUser;
+  }
+
+  @Post('/superLikeUser')
+  @UseGuards(AuthGuard)
+  superLikeToUser(
+    @Req() req: IGetUserAuthInfoRequest,
+    @Body() body: SuperLikeUserDTO,
+  ) {
+    if (!this.usersService.canUseSuperLike(req.user)) {
+      return {
+        success: false,
+        message: 'Super like is available on Collab Pro and above',
+        data: null,
+      };
+    }
+    return this.usersService.superLike(
+      { _id: body.userSuperLikedByMe },
+      {
+        $inc: {
+          superLikeCount: 1,
+        },
+      },
+    );
+  }
+
+  @Post('/unLikeUser')
+  @UseGuards(AuthGuard)
+  async unLikeUser(
+    @Req() req: IGetUserAuthInfoRequest,
+    @Body() body: { userUnLikedByMe: string },
+  ) {
+    console.log({ body });
+    this.usersService.findOneAndUpdate(
+      { _id: req.user._id },
+      {
+        $push: { unLikedByMe: body.userUnLikedByMe },
+        $pull: { likedByMe: body.userUnLikedByMe },
+      },
+    );
+    this.usersService.findOneAndUpdate(
+      { _id: body.userUnLikedByMe },
+      {
+        $pull: { likedBySomeone: req.user._id },
+      },
+    );
+    return {
+      success: true,
+      message: 'You have unlike this user',
+      data: null,
+    };
+  }
+
+  @Put('/updateNotifications')
+  @UseGuards(AuthGuard)
+  updateUser(
+    @Req() req: IGetUserAuthInfoRequest,
+    @Body() body: UpdateNotificationsDto,
+  ) {
+    return this.usersService.findOneAndUpdate({ _id: req.user._id }, body);
+  }
+
+  @Post('/connectUser')
+  @UseGuards(AuthGuard)
+  connectUser(
+    @Req() req: IGetUserAuthInfoRequest,
+    @Body() body: { userToConnect: string },
+  ) {
+    return this.usersService.connectUser(req, body);
+  }
+
+  @Post('/dashboardListing')
+  @UseGuards(AuthGuard)
+  dashboardListing(@Req() req: IGetUserAuthInfoRequest) {
+    return this.usersService.findAll(req);
+  }
+
+  @Get('/getAllLikedUsers')
+  @UseGuards(AuthGuard)
+  getAllLikedUsers(@Req() req: IGetUserAuthInfoRequest) {
+    return this.usersService.getAllLikedUsers(req);
+  }
+
+  @Get('/getAllUsersWhoLikedMe')
+  @UseGuards(AuthGuard)
+  getAllUsersWhomLikedMe(@Req() req: IGetUserAuthInfoRequest) {
+    return this.usersService.getAllUsersWhomLikedMe(req);
+  }
+
+  @Get('/subscription/paywall')
+  @UseGuards(AuthGuard)
+  getSubscriptionPaywall(@Req() req: IGetUserAuthInfoRequest) {
+    return this.usersService.getSubscriptionPaywall(req);
+  }
+
+  @Get('/subscription/analytics')
+  @UseGuards(AuthGuard)
+  getSubscriptionAnalytics(@Req() req: IGetUserAuthInfoRequest) {
+    return this.usersService.getSubscriptionAnalytics(req);
+  }
+
+  @Post('/subscriptions/verify-ios')
+  @UseGuards(AuthGuard)
+  verifyIosSubscription(
+    @Req() req: IGetUserAuthInfoRequest,
+    @Body() body: { receiptData?: string; productId?: string },
+  ) {
+    return this.usersService.verifyIosSubscription(req, body);
+  }
+
+  @Get('/myProfile')
+  @UseGuards(AuthGuard)
+  myProfile(@Req() req: IGetUserAuthInfoRequest) {
+    console.log({ user: req.user });
+    return this.usersService.findOne({ _id: req.user._id });
+  }
+
+  /** @deprecated Prefer GET /users/by-id/:id (same behaviour). */
+  @Get('/othersProfile/:id')
+  @UseGuards(AuthGuard)
+  othersProfile(@Param('id') id: string) {
+    return this.usersService.getUserProfileById(id);
+  }
+
+  /** Get another user’s profile (or your own) by MongoDB `_id`. Requires Bearer token. */
+  @Get('/by-id/:id')
+  @UseGuards(AuthGuard)
+  getUserById(@Param('id') id: string) {
+    return this.usersService.getUserProfileById(id);
+  }
+
+  @Post('/deactive')
+  @UseGuards(AuthGuard)
+  deactive(@Req() req: IGetUserAuthInfoRequest) {
+    console.log({ user: req.user });
+    return this.usersService.findOneAndUpdate(
+      { _id: req.user._id },
+      {
+        isDeleted: true,
+        reasonToDeleteAccount: req.body.reasonToDeleteAccount,
+      },
+    );
+  }
+
+  @Post('/logout')
+  @UseGuards(AuthGuard)
+  logout(@Req() req: IGetUserAuthInfoRequest) {
+    console.log({ user: req.user });
+    return this.usersService.findOneAndUpdate(
+      { _id: req.user._id },
+      {
+        deviceToken: '',
+      },
+    );
+  }
+
+  // Admin APIS
+
+  @Get('/list')
+  @UseGuards(AuthGuard)
+  listUsers(@Req() req: IGetUserAuthInfoRequest) {
+    return this.usersService.listUsers(req);
+  }
+
+  @Get('/getAll')
+  // @UseGuards(AuthGuard)
+  findAllUsers(@Req() req: IGetUserAuthInfoRequest) {
+    return this.usersService.findAllForAdmin(req);
+  }
+
+  @Get('/rewind')
+  @UseGuards(AuthGuard)
+  async rewind(@Req() req: IGetUserAuthInfoRequest) {
+    return this.usersService.rewind(req);
+  }
+}
