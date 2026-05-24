@@ -224,4 +224,10 @@ export class UpdateUserDTO {
   @Transform(({ value }) => formBoolean(value))
   @IsBoolean()
   pushNotificationEnabled?: boolean;
+
+  /** Set by server when profile videos are transcoding in background. */
+  @IsOptional()
+  @Transform(({ value }) => formBoolean(value))
+  @IsBoolean()
+  mediaProcessing?: boolean;
 }
