@@ -47,6 +47,9 @@ import { AdminLoginDTO } from './dtos/adminLogin.dto';
 
 const UPLOADS_DIR = join(process.cwd(), 'uploads');
 
+/** Profile/gallery clips: client enforces 15s + 5MB; server rejects oversize uploads. */
+export const PROFILE_VIDEO_MAX_BYTES = 5 * 1024 * 1024;
+
 export const storage = {
   storage: diskStorage({
     destination: UPLOADS_DIR,
@@ -60,7 +63,35 @@ export const storage = {
       cb(null, `${userId}_${safeOriginal}`);
     },
   }),
+  limits: {
+    /** Multer cap (images + videos); videos also checked at PROFILE_VIDEO_MAX_BYTES. */
+    fileSize: 8 * 1024 * 1024,
+  },
 };
+
+function assertProfileVideoSizes(
+  files: {
+    profileVideo?: Express.Multer.File[];
+    videos?: Express.Multer.File[];
+  } | undefined,
+): void {
+  const videoFiles = [
+    ...(files?.profileVideo ?? []),
+    ...(files?.videos ?? []),
+  ];
+  for (const file of videoFiles) {
+    if (file.size > PROFILE_VIDEO_MAX_BYTES) {
+      throw new HttpException(
+        {
+          success: false,
+          message: 'Each video must be 5MB or less',
+          data: null,
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+  }
+}
 
 @Controller('users')
 export class UsersController {
@@ -151,6 +182,8 @@ export class UsersController {
         videos: (files?.videos ?? []).map((v) => fileMeta(v)),
       })}`,
     );
+
+    assertProfileVideoSizes(files);
 
     try {
     let previousVideos: { url: string; thumbnailUrl?: string }[] = [];
