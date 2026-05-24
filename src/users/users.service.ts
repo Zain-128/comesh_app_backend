@@ -937,16 +937,102 @@ export class UsersService {
     };
   }
 
+  /** Parse follower counts like 804900, "804900", or "804.9K". */
+  private coerceFollowers(value: unknown): number {
+    if (value === undefined || value === null || value === '') {
+      return 0;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return Math.max(0, Math.round(value));
+    }
+    const raw = String(value).trim().toUpperCase().replace(/,/g, '');
+    if (!raw) {
+      return 0;
+    }
+    const m = raw.match(/^([\d.]+)\s*([KMB])?$/);
+    if (!m) {
+      const n = Number(raw);
+      return Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0;
+    }
+    const base = Number(m[1]);
+    if (!Number.isFinite(base)) {
+      return 0;
+    }
+    const mult =
+      m[2] === 'B' ? 1_000_000_000 : m[2] === 'M' ? 1_000_000 : m[2] === 'K' ? 1_000 : 1;
+    return Math.max(0, Math.round(base * mult));
+  }
+
+  /** GeoJSON Point for 2dsphere — [longitude, latitude] as numbers. */
+  private normalizeLocation(value: unknown): { type: 'Point'; coordinates: [number, number] } | undefined {
+    if (!value || typeof value !== 'object') {
+      return undefined;
+    }
+    const loc = value as { type?: string; coordinates?: unknown[] };
+    const coords = loc.coordinates;
+    if (!Array.isArray(coords) || coords.length < 2) {
+      return undefined;
+    }
+    const a = Number(coords[0]);
+    const b = Number(coords[1]);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) {
+      return undefined;
+    }
+    return { type: 'Point', coordinates: [a, b] };
+  }
+
+  private buildUserPatch(data: UpdateUserDTO | Record<string, unknown>) {
+    const patch: Record<string, unknown> = {
+      isFirstTime: false,
+      ...data,
+    };
+    delete patch._id;
+    delete patch.previousVideos;
+    delete patch.emptyVideos;
+
+    if (patch.followers !== undefined) {
+      patch.followers = this.coerceFollowers(patch.followers);
+    }
+    if (patch.location !== undefined) {
+      const normalized = this.normalizeLocation(patch.location);
+      if (normalized) {
+        patch.location = normalized;
+      } else {
+        delete patch.location;
+      }
+    }
+
+    Object.keys(patch).forEach((key) => {
+      if (patch[key] === undefined) {
+        delete patch[key];
+      }
+    });
+
+    return patch;
+  }
+
   async findOneAndUpdate(
     filter: { [key: string]: any },
     data: UpdateUserDTO | any,
   ) {
-    // console.log({ filter });
+    const usesOperators = Object.keys(data || {}).some((k) => k.startsWith('$'));
 
-    let updatedData = await this.userModel
-      .findOneAndUpdate(filter, { isFirstTime: false, ...data }, { new: true })
-      .exec();
-    // console.log({ updatedData });
+    let updatedData: UserDocument | null;
+    if (usesOperators) {
+      updatedData = await this.userModel
+        .findOneAndUpdate(
+          filter,
+          { isFirstTime: false, ...data },
+          { new: true },
+        )
+        .exec();
+    } else {
+      const patch = this.buildUserPatch(data);
+      updatedData = await this.userModel
+        .findOneAndUpdate(filter, { $set: patch }, { new: true, runValidators: true })
+        .exec();
+    }
+
     if (updatedData) {
       return {
         success: true,
@@ -954,6 +1040,15 @@ export class UsersService {
         data: updatedData,
       };
     }
+
+    throw new HttpException(
+      {
+        success: false,
+        message: 'User not found',
+        data: null,
+      },
+      HttpStatus.NOT_FOUND,
+    );
   }
 
   async likeUser(filter: { [key: string]: any }, data: UpdateUserDTO | any) {

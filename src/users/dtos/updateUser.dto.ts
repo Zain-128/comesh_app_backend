@@ -230,4 +230,9 @@ export class UpdateUserDTO {
   @Transform(({ value }) => formBoolean(value))
   @IsBoolean()
   mediaProcessing?: boolean;
+
+  @IsOptional()
+  @Transform(({ value }) => formBoolean(value))
+  @IsBoolean()
+  isFirstTime?: boolean;
 }
