@@ -829,20 +829,6 @@ export class UsersService {
   }
 
   async getAllUsersWhomLikedMe(req: IGetUserAuthInfoRequest) {
-    const me = await this.userModel
-      .findById(req.user._id)
-      .select('subscriptionTier subscriptionExpiresAt')
-      .lean()
-      .exec();
-    const limits = limitsForUser(me || {});
-    if (!limits.seeWhoLiked) {
-      return {
-        success: true,
-        message: 'Upgrade to Collab Pro to see who liked you',
-        data: { likedBySomeone: [] },
-      };
-    }
-
     let user1 = await this.userModel.aggregate([
       {
         $match: {
