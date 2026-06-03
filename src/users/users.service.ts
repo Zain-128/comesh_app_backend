@@ -981,18 +981,103 @@ export class UsersService {
     return { type: 'Point', coordinates: [a, b] };
   }
 
+  /** Only schema-backed fields — stray keys (lat/lng) caused Mongo plan executor errors. */
+  private static readonly PROFILE_PATCH_KEYS = new Set([
+    'firstName',
+    'lastName',
+    'description',
+    'profileImage',
+    'profileVideo',
+    'profileVideoThumbnail',
+    'email',
+    'dob',
+    'address',
+    'niche',
+    'videos',
+    'willingToTravel',
+    'followers',
+    'socialMediaProfiles',
+    'availability',
+    'availabilityFrom',
+    'availabilityTo',
+    'timeZone',
+    'showLocation',
+    'questionAndAnswers',
+    'deviceToken',
+    'pushNotificationEnabled',
+    'pronouns',
+    'isFirstTime',
+    'mediaProcessing',
+    'gender',
+    'status',
+    'location',
+  ]);
+
+  private sanitizeNiche(value: unknown): string[] | undefined {
+    if (!Array.isArray(value)) {
+      return undefined;
+    }
+    const out = value
+      .map((v) => String(v ?? '').trim())
+      .filter((s) => s.length > 0);
+    return out.length ? out : undefined;
+  }
+
+  private sanitizeQuestionAndAnswers(
+    value: unknown,
+  ): { question: string; answer: string }[] | undefined {
+    if (!Array.isArray(value)) {
+      return undefined;
+    }
+    const out = value
+      .map((item) => {
+        if (!item || typeof item !== 'object') {
+          return null;
+        }
+        const row = item as Record<string, unknown>;
+        const question = String(row.question ?? row.Q ?? '').trim();
+        const answer = String(row.answer ?? row.selected ?? row.A ?? '').trim();
+        if (!question || !answer) {
+          return null;
+        }
+        return { question, answer };
+      })
+      .filter(Boolean) as { question: string; answer: string }[];
+    return out.length ? out : undefined;
+  }
+
   private buildUserPatch(data: UpdateUserDTO | Record<string, unknown>) {
-    const patch: Record<string, unknown> = { ...data };
+    const raw = data || {};
+    const patch: Record<string, unknown> = {};
+
+    for (const key of UsersService.PROFILE_PATCH_KEYS) {
+      if (raw[key] !== undefined) {
+        patch[key] = raw[key];
+      }
+    }
+
     if (patch.isFirstTime !== true) {
       patch.isFirstTime = false;
     }
-    delete patch._id;
-    delete patch.previousVideos;
-    delete patch.emptyVideos;
 
     if (patch.followers !== undefined) {
       patch.followers = this.coerceFollowers(patch.followers);
     }
+
+    const niche = this.sanitizeNiche(patch.niche);
+    if (niche) {
+      patch.niche = niche;
+    } else {
+      delete patch.niche;
+    }
+
+    const qa = this.sanitizeQuestionAndAnswers(patch.questionAndAnswers);
+    if (qa) {
+      patch.questionAndAnswers = qa;
+    } else {
+      delete patch.questionAndAnswers;
+    }
+
     if (patch.location !== undefined) {
       const normalized = this.normalizeLocation(patch.location);
       if (normalized) {
@@ -1000,6 +1085,10 @@ export class UsersService {
       } else {
         delete patch.location;
       }
+    }
+
+    if (patch.email !== undefined) {
+      patch.email = String(patch.email).replace(/\s/g, '').trim();
     }
 
     Object.keys(patch).forEach((key) => {
@@ -1018,19 +1107,43 @@ export class UsersService {
     const usesOperators = Object.keys(data || {}).some((k) => k.startsWith('$'));
 
     let updatedData: UserDocument | null;
-    if (usesOperators) {
-      updatedData = await this.userModel
-        .findOneAndUpdate(
-          filter,
-          { isFirstTime: false, ...data },
-          { new: true },
-        )
-        .exec();
-    } else {
-      const patch = this.buildUserPatch(data);
-      updatedData = await this.userModel
-        .findOneAndUpdate(filter, { $set: patch }, { new: true, runValidators: true })
-        .exec();
+    try {
+      if (usesOperators) {
+        const op = { ...data } as Record<string, unknown>;
+        if (op.isFirstTime !== true) {
+          op.isFirstTime = false;
+        }
+        updatedData = await this.userModel
+          .findOneAndUpdate(filter, op, { new: true })
+          .exec();
+      } else {
+        const patch = this.buildUserPatch(data);
+        updatedData = await this.userModel
+          .findOneAndUpdate(filter, { $set: patch }, { new: true })
+          .exec();
+      }
+    } catch (e: any) {
+      const msg = String(e?.message ?? e ?? 'Update failed');
+      this.logger.error(`findOneAndUpdate failed: ${msg}`, e?.stack);
+      if (msg.includes('E11000') || msg.includes('duplicate key')) {
+        throw new HttpException(
+          {
+            success: false,
+            message: 'Email or phone already in use.',
+            data: null,
+          },
+          HttpStatus.CONFLICT,
+        );
+      }
+      throw new HttpException(
+        {
+          success: false,
+          message:
+            'Could not save profile. Please try again. If this keeps happening, contact support.',
+          data: null,
+        },
+        HttpStatus.BAD_REQUEST,
+      );
     }
 
     if (updatedData) {

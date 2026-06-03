@@ -107,7 +107,7 @@ export class User {
   socialMediaProfiles: socialMediaProfiles;
 
   @Prop({ default: '' })
-  availability: Date;
+  availability: string;
 
   @Prop({ default: '' })
   availabilityTo: string;

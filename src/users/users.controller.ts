@@ -310,12 +310,15 @@ export class UsersController {
         `[updateProfile] error userId=${userId}: ${e?.message ?? e}`,
         e?.stack,
       );
-      const msg =
+      const raw =
         typeof e?.message === 'string' ? e.message : 'Profile update failed';
+      const friendly = raw.includes('Plan executor')
+        ? 'Could not save profile (database error). Deploy the latest backend and try again.'
+        : raw;
       throw new HttpException(
         {
           success: false,
-          message: msg,
+          message: friendly,
           statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
           data: null,
         },
