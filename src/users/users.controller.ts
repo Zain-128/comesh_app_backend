@@ -47,8 +47,9 @@ import { AdminLoginDTO } from './dtos/adminLogin.dto';
 
 const UPLOADS_DIR = join(process.cwd(), 'uploads');
 
-/** Profile/gallery clips: client enforces 15s + 5MB; server rejects oversize uploads. */
+/** Profile video: client enforces 15s + 5MB. Gallery clips (onboarding): up to 25MB each. */
 export const PROFILE_VIDEO_MAX_BYTES = 5 * 1024 * 1024;
+export const GALLERY_VIDEO_MAX_BYTES = 25 * 1024 * 1024;
 
 export const storage = {
   storage: diskStorage({
@@ -64,8 +65,8 @@ export const storage = {
     },
   }),
   limits: {
-    /** Multer cap (images + videos); videos also checked at PROFILE_VIDEO_MAX_BYTES. */
-    fileSize: 8 * 1024 * 1024,
+    /** Multer cap per file (gallery clips up to GALLERY_VIDEO_MAX_BYTES). */
+    fileSize: 30 * 1024 * 1024,
   },
 };
 
@@ -75,16 +76,23 @@ function assertProfileVideoSizes(
     videos?: Express.Multer.File[];
   } | undefined,
 ): void {
-  const videoFiles = [
-    ...(files?.profileVideo ?? []),
-    ...(files?.videos ?? []),
-  ];
-  for (const file of videoFiles) {
-    if (file.size > PROFILE_VIDEO_MAX_BYTES) {
+  const profile = files?.profileVideo?.[0];
+  if (profile && profile.size > PROFILE_VIDEO_MAX_BYTES) {
+    throw new HttpException(
+      {
+        success: false,
+        message: 'Profile video must be 5MB or less',
+        data: null,
+      },
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+  for (const file of files?.videos ?? []) {
+    if (file.size > GALLERY_VIDEO_MAX_BYTES) {
       throw new HttpException(
         {
           success: false,
-          message: 'Each video must be 5MB or less',
+          message: 'Each gallery video must be 25MB or less',
           data: null,
         },
         HttpStatus.BAD_REQUEST,
