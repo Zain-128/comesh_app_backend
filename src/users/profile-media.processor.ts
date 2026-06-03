@@ -36,6 +36,7 @@ export class ProfileMediaProcessorService {
   private async run(job: ProfileMediaJob): Promise<void> {
     const { userId, host, stamp } = job;
     const patch: Record<string, unknown> = { mediaProcessing: false };
+    let failed = false;
 
     try {
       if (job.profileImage) {
@@ -44,34 +45,6 @@ export class ProfileMediaProcessorService {
           host,
           `${userId}_pimg_${stamp}`,
         );
-      }
-
-      let videoArr: VideoEntry[] = job.emptyVideos
-        ? []
-        : [...job.previousVideos];
-
-      if (job.galleryVideos.length) {
-        const processed = await Promise.all(
-          job.galleryVideos.map((file, i) =>
-            this.mediaService.processUploadedVideo(
-              file,
-              host,
-              `${userId}_v_${stamp}_${i}`,
-            ),
-          ),
-        );
-        videoArr = [
-          ...videoArr,
-          ...processed.map((p) => ({
-            url: p.url,
-            thumbnailUrl: p.thumbnailUrl || undefined,
-          })),
-        ];
-        patch.videos = videoArr;
-      } else if (job.emptyVideos) {
-        patch.videos = [];
-      } else if (job.previousVideos.length) {
-        patch.videos = videoArr;
       }
 
       if (job.profileVideo) {
@@ -84,19 +57,48 @@ export class ProfileMediaProcessorService {
         patch.profileVideoThumbnail = processed.thumbnailUrl || '';
       }
 
+      let videoArr: VideoEntry[] = job.emptyVideos
+        ? []
+        : [...job.previousVideos];
+
+      if (job.galleryVideos.length) {
+        const processed: { url: string; thumbnailUrl?: string }[] = [];
+        for (let i = 0; i < job.galleryVideos.length; i++) {
+          const p = await this.mediaService.processUploadedVideo(
+            job.galleryVideos[i],
+            host,
+            `${userId}_v_${stamp}_${i}`,
+          );
+          processed.push({
+            url: p.url,
+            thumbnailUrl: p.thumbnailUrl || undefined,
+          });
+        }
+        videoArr = [...videoArr, ...processed];
+        patch.videos = videoArr;
+      } else if (job.emptyVideos) {
+        patch.videos = [];
+      } else if (job.previousVideos.length) {
+        patch.videos = videoArr;
+      }
+
       await this.userModel
         .findByIdAndUpdate(userId, { $set: patch }, { new: true })
         .exec();
 
       this.logger.log(`[profileMedia] done userId=${userId}`);
     } catch (e: any) {
+      failed = true;
       this.logger.error(
         `[profileMedia] failed userId=${userId}: ${e?.message ?? e}`,
         e?.stack,
       );
-      await this.userModel
-        .findByIdAndUpdate(userId, { $set: { mediaProcessing: false } })
-        .exec();
+    } finally {
+      if (failed) {
+        await this.userModel
+          .findByIdAndUpdate(userId, { $set: { mediaProcessing: false } })
+          .exec();
+      }
     }
   }
 }
