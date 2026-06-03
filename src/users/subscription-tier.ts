@@ -31,7 +31,8 @@ type TierLimits = {
 export const TIER_LIMITS: Record<SubscriptionTier, TierLimits> = {
   [SUBSCRIPTION_TIERS.CREATOR_ACCESS]: {
     maxDailySwipes: 20,
-    maxProfileVideos: 2,
+    /** 1 profile video + up to 5 gallery clips (matches onboarding OnBoard3). */
+    maxProfileVideos: 6,
     advancedFilters: false,
     seeWhoLiked: false,
     directMessagingWithoutMatch: false,
