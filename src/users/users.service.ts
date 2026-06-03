@@ -982,10 +982,10 @@ export class UsersService {
   }
 
   private buildUserPatch(data: UpdateUserDTO | Record<string, unknown>) {
-    const patch: Record<string, unknown> = {
-      isFirstTime: false,
-      ...data,
-    };
+    const patch: Record<string, unknown> = { ...data };
+    if (patch.isFirstTime !== true) {
+      patch.isFirstTime = false;
+    }
     delete patch._id;
     delete patch.previousVideos;
     delete patch.emptyVideos;
