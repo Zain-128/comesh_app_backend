@@ -1,5 +1,0 @@
-export enum NotificationEnum {
-  LIKE = 'LIKE',
-  PENDING_CONNECTION = 'PENDING_CONNECTION',
-  CONNECTION = 'CONNECTION',
-}

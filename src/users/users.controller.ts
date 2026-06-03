@@ -200,9 +200,11 @@ export class UsersController {
     }
 
     const limits = await this.usersService.getCurrentTierLimits(String(req.user._id));
+    const incomingVideoCount =
+      (files?.profileVideo?.[0] ? 1 : 0) + (files?.videos?.length || 0);
     const requestedVideoCount =
       (Array.isArray(previousVideos) ? previousVideos.length : 0) +
-      (files?.videos?.length || 0);
+      incomingVideoCount;
     if (requestedVideoCount > limits.maxProfileVideos) {
       throw new HttpException(
         {
@@ -280,7 +282,8 @@ export class UsersController {
       body.videos = [];
     }
 
-    body.mediaProcessing = false;
+    /** JSON-only updates (e.g. onboarding step 4 after multipart) must not clear in-flight video processing. */
+    delete (body as { mediaProcessing?: boolean }).mediaProcessing;
 
     this.logger.log(
       `[updateProfile] saving userId=${userId} patchKeys=${JSON.stringify(Object.keys(body))} emptyVideos=${body.emptyVideos === true}`,

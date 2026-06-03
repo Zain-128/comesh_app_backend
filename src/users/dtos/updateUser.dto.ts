@@ -153,9 +153,23 @@ export class UpdateUserDTO {
   willingToTravel?: boolean;
 
   @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  followers?: string;
+  @Transform(({ value }) => {
+    if (value === undefined || value === null || value === '') return value;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return Math.max(0, Math.round(value));
+    }
+    const raw = String(value).trim().toUpperCase().replace(/,/g, '');
+    const m = raw.match(/^([\d.]+)\s*([KMB])?$/);
+    if (!m) {
+      const n = Number(raw);
+      return Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0;
+    }
+    const base = Number(m[1]);
+    const mult =
+      m[2] === 'B' ? 1e9 : m[2] === 'M' ? 1e6 : m[2] === 'K' ? 1e3 : 1;
+    return Math.max(0, Math.round(base * mult));
+  })
+  followers?: number;
 
   @IsOptional()
   @Transform(({ value }) => formJson(value))
