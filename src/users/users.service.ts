@@ -1569,26 +1569,32 @@ export class UsersService {
   // }
 
   async rewind(req) {
-    const user = await this.userModel.findById(req.user._id).exec();
+    const doc = await this.userModel.findById(req.user._id).exec();
 
-    if (!user || !user.unLikedByMe.length) {
+    if (!doc?.unLikedByMe?.length) {
       return {
         success: false,
-        message: 'No unliked users to rewind',
+        message: 'No passed profiles to rewind',
         data: null,
       };
     }
 
-    // Get the last unliked user ID from the unlikedByMe array
-    const lastUnlikedUserId = user.unLikedByMe.pop();
+    const lastUnlikedUserId = doc.unLikedByMe[doc.unLikedByMe.length - 1];
+    doc.unLikedByMe = doc.unLikedByMe.slice(0, -1);
+    await doc.save();
 
-    await user.save();
-
-    // Optionally, return the rewound user details
     const rewoundUser = await this.userModel.findById(lastUnlikedUserId).exec();
+    if (!rewoundUser) {
+      return {
+        success: false,
+        message: 'Could not load rewound profile',
+        data: null,
+      };
+    }
+
     return {
       success: true,
-      message: 'Last user rewind successfully',
+      message: 'Last pass undone — you can like them again',
       data: rewoundUser,
     };
   }
